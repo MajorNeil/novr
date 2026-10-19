@@ -69,11 +69,14 @@ public class VrUiCursor: NOVRBehaviour
     private bool _hasProjectionReferenceOverride;
     private Quaternion _projectionReferenceRotation = Quaternion.identity;
 
-    private bool _hasInitializedEventSystem = false;
+    private static readonly Vector2 OffScreenPoint = new(-1f, -1f);
+    private BaseInputModule? _lastSeenUiModule;
     private Mouse? _virtualMouse;
     private Mouse? _realMouse;
-    
-    
+    private Rect _loggedCameraPixelRect;
+    private Vector2Int _loggedScreenSize;
+
+
     private int ScreenWidth => Screen.width;
     private int ScreenHeight => Screen.height;
     public Camera? UiCamera
@@ -83,19 +86,25 @@ public class VrUiCursor: NOVRBehaviour
             return APIBus.CockpitHudCamera;
         }
     }
-    
-    
+
+
     public Vector2 GetScreenPoint()
     {
         var camera = UiCamera;
         if (_cursor != null && camera != null)
         {
-            Vector3 viewportPoint = camera.WorldToViewportPoint(_cursor.transform.position, Camera.MonoOrStereoscopicEye.Mono);
-            float screenX = Mathf.Clamp(viewportPoint.x * Screen.width, 0f, Screen.width);
-            float screenY = Mathf.Clamp(viewportPoint.y * Screen.height, 0f, Screen.height);
-            return new Vector2(screenX, screenY);
+            return ToEventScreenPoint(camera, _cursor.transform.position);
         }
         return Vector2.zero;
+    }
+
+    // GraphicRaycaster and RectTransformUtility turn pointer positions back into rays using the event camera's own
+    // pixel rect, which under XR is not the desktop window (Screen.width/height), so project with that same camera.
+    private static Vector2 ToEventScreenPoint(Camera camera, Vector3 worldPosition)
+    {
+        var screenPoint = camera.WorldToScreenPoint(worldPosition, Camera.MonoOrStereoscopicEye.Mono);
+        // Behind the camera the projection mirrors back onto the screen; keep it off-screen so it can't hit anything.
+        return screenPoint.z > 0f ? (Vector2)screenPoint : OffScreenPoint;
     }
 
     public void SetProjectionReferenceRotation(Quaternion referenceRotation)
@@ -143,14 +152,14 @@ public class VrUiCursor: NOVRBehaviour
             Debug.Log($"[NOVR] Added VirtualMouse device: name='{_virtualMouse.name}', path='{_virtualMouse.path}', displayName='{_virtualMouse.displayName}'");
         }
 
-        if (!_hasInitializedEventSystem)
-        {
-            if (RestrictUIModuleToVirtualMouse())
-            {
-                _hasInitializedEventSystem = true;
-            }
-        }
+        EnsureUIModuleRestrictedToVirtualMouse();
         if (_texture == null) return;
+
+        if (Keyboard.current?.homeKey.wasPressedThisFrame == true)
+        {
+            RecenterCursor();
+        }
+
         UpdateCursorAngles();
         
         var realMouse = _realMouse;
@@ -207,8 +216,8 @@ public class VrUiCursor: NOVRBehaviour
         Vector3 localDirection = Quaternion.Euler(-cursorPitch, cursorYaw, 0f) * Vector3.forward;
         Quaternion referenceRotation = GetProjectionReferenceRotation();
         Vector3 worldDirection = referenceRotation * localDirection;
-        Vector3 viewportSpace = camera.WorldToViewportPoint(camera.transform.position + worldDirection * DefaultProjectionDistance, Camera.MonoOrStereoscopicEye.Mono);
-        Vector2 inScreenSpace = new Vector2(viewportSpace.x * Screen.width, viewportSpace.y * Screen.height);
+        LogPointerSpaceChanges(camera);
+        Vector2 inScreenSpace = ToEventScreenPoint(camera, camera.transform.position + worldDirection * DefaultProjectionDistance);
         float cursorDistance = GetDistanceUnderCursor(inScreenSpace);
         Vector3 pos = camera.transform.position + worldDirection * cursorDistance;
         _cursor.transform.position = pos;
@@ -224,7 +233,36 @@ public class VrUiCursor: NOVRBehaviour
 
         return transform.parent != null ? transform.parent.rotation : Quaternion.identity;
     }
-    
+
+    // Home puts the OS mouse back in the middle of the game window, which maps to the projection reference forward.
+    // The native menu recenters the headset itself on Home; everywhere else the headset is recentered here so that
+    // reference forward (where the in-game menus sit) is where the player is looking.
+    private void RecenterCursor()
+    {
+        _realMouse?.WarpCursorPosition(new Vector2(ScreenWidth * 0.5f, ScreenHeight * 0.5f));
+        if (!_hasProjectionReferenceOverride)
+        {
+            NOVRHeadsetData.CalibrateTranslation();
+            NOVRHeadsetData.CalibrateRotation();
+        }
+
+        NOVRPlugin.Log.LogInfo($"[{nameof(VrUiCursor)}] Recentered cursor (headset recentered: {!_hasProjectionReferenceOverride}).");
+    }
+
+    private void LogPointerSpaceChanges(Camera camera)
+    {
+        var pixelRect = camera.pixelRect;
+        var screenSize = new Vector2Int(ScreenWidth, ScreenHeight);
+        if (pixelRect == _loggedCameraPixelRect && screenSize == _loggedScreenSize) return;
+
+        _loggedCameraPixelRect = pixelRect;
+        _loggedScreenSize = screenSize;
+        NOVRPlugin.Log.LogInfo(
+            $"[{nameof(VrUiCursor)}] Pointer space: UI camera '{camera.name}' pixelRect={pixelRect}, window={screenSize.x}x{screenSize.y}, " +
+            $"stereo={camera.stereoEnabled}, XR display running={Core.IsXrDisplayRunning()}. " +
+            "If pixelRect differs from the window size, clicks used to land away from the drawn cursor.");
+    }
+
     private void EnsureCursorCanvas(Camera uiCaptureCamera)
     {
         if (_cursor != null)
@@ -426,6 +464,10 @@ public class VrUiCursor: NOVRBehaviour
         EventSystem.current.RaycastAll(pointerEventData, results);
         
         Debug.Log($"[VrUiCursor] Click Raycast at screenPos={screenPos}: found {results.Count} results");
+        NOVRPlugin.Log.LogInfo(
+            $"[{nameof(VrUiCursor)}] Click at screenPos={screenPos} (UI camera pixelRect={UiCamera?.pixelRect}, window={ScreenWidth}x{ScreenHeight}), " +
+            $"cursor world={CursorPosition}, UI module={EventSystem.current.currentInputModule?.GetType().Name}, " +
+            $"first hit='{(results.Count > 0 ? GetGameObjectPath(results[0].gameObject) : "none")}'");
         for (int i = 0; i < results.Count; i++)
         {
             var result = results[i];
@@ -456,27 +498,38 @@ public class VrUiCursor: NOVRBehaviour
         return path;
     }
 
-    private bool RestrictUIModuleToVirtualMouse()
+    // A scene change can bring a new EventSystem/UI module whose actions still read the real mouse, i.e. desktop
+    // coordinates pushed through the head-tracked UI camera, so re-check whenever the active module changes.
+    private void EnsureUIModuleRestrictedToVirtualMouse()
+    {
+        var eventSystem = EventSystem.current;
+        var module = eventSystem != null ? eventSystem.currentInputModule : null;
+        if (module == null || module == _lastSeenUiModule) return;
+
+        if (module is UnityEngine.InputSystem.UI.InputSystemUIInputModule uiModule)
+        {
+            if (!RestrictUIModuleToVirtualMouse(uiModule)) return;
+        }
+        else
+        {
+            NOVRPlugin.Log.LogWarning($"[{nameof(VrUiCursor)}] Active UI module is {module.GetType().Name} on '{module.name}'; it reads the real mouse, so UI clicks will not follow the VR cursor.");
+        }
+
+        _lastSeenUiModule = module;
+    }
+
+    private bool RestrictUIModuleToVirtualMouse(UnityEngine.InputSystem.UI.InputSystemUIInputModule uiModule)
     {
         try
         {
             if (_virtualMouse == null) return false;
-            var uiModule = FindObjectOfType<UnityEngine.InputSystem.UI.InputSystemUIInputModule>();
-            if (uiModule != null)
-            {
-                Debug.Log($"[NOVR] Restricting InputSystemUIInputModule actions to VirtualMouse (path: {_virtualMouse.path})");
-                RestrictActionToVirtualMouse(uiModule.point?.action, _virtualMouse.path);
-                RestrictActionToVirtualMouse(uiModule.leftClick?.action, _virtualMouse.path);
-                RestrictActionToVirtualMouse(uiModule.middleClick?.action, _virtualMouse.path);
-                RestrictActionToVirtualMouse(uiModule.rightClick?.action, _virtualMouse.path);
-                RestrictActionToVirtualMouse(uiModule.scrollWheel?.action, _virtualMouse.path);
-                return true;
-            }
-            else
-            {
-                Debug.LogWarning("[NOVR] InputSystemUIInputModule not found in scene yet, retrying next frame...");
-                return false;
-            }
+            NOVRPlugin.Log.LogInfo($"[{nameof(VrUiCursor)}] Restricting InputSystemUIInputModule on '{uiModule.name}' to VirtualMouse (path: {_virtualMouse.path})");
+            RestrictActionToVirtualMouse(uiModule.point?.action, _virtualMouse.path);
+            RestrictActionToVirtualMouse(uiModule.leftClick?.action, _virtualMouse.path);
+            RestrictActionToVirtualMouse(uiModule.middleClick?.action, _virtualMouse.path);
+            RestrictActionToVirtualMouse(uiModule.rightClick?.action, _virtualMouse.path);
+            RestrictActionToVirtualMouse(uiModule.scrollWheel?.action, _virtualMouse.path);
+            return true;
         }
         catch (System.Exception ex)
         {
@@ -491,9 +544,11 @@ public class VrUiCursor: NOVRBehaviour
         for (int i = 0; i < action.bindings.Count; i++)
         {
             var binding = action.bindings[i];
-            if (binding.path.Contains("<Mouse>"))
+            // <Pointer> also matches the real mouse, so it has to be narrowed down the same way.
+            var genericDevice = binding.path.Contains("<Mouse>") ? "<Mouse>" : binding.path.Contains("<Pointer>") ? "<Pointer>" : null;
+            if (genericDevice != null)
             {
-                var newPath = binding.path.Replace("<Mouse>", devicePath);
+                var newPath = binding.path.Replace(genericDevice, devicePath);
                 action.ApplyBindingOverride(i, newPath);
                 Debug.Log($"[NOVR] Overriding UI binding path: '{binding.path}' -> '{newPath}' for action '{action.name}'");
             }

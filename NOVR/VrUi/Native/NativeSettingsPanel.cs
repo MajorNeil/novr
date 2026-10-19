@@ -95,11 +95,24 @@ public class NativeSettingsPanel : MonoBehaviour
         {
             UpdateVisibleBindingAxisValues();
 
-            if (_queuedBinding == null && _activeBinding == null)
+            if (_queuedBinding == null && _activeBinding == null && !IsPointerButtonActive())
             {
                 UpdateActiveBindingFocus();
             }
         }
+    }
+
+    // UpdateActiveBindingFocus rebuilds the list whenever a bound input is held. A mouse button that is also bound to a
+    // game action (e.g. fire on left click) would rebuild it mid-click, destroying the button being clicked and
+    // scrolling the list to that action, so clicks were lost or landed on a different row.
+    private static bool IsPointerButtonActive()
+    {
+        var mouse = UnityEngine.InputSystem.Mouse.current;
+        if (mouse == null) return false;
+
+        return mouse.leftButton.isPressed || mouse.leftButton.wasReleasedThisFrame ||
+               mouse.rightButton.isPressed || mouse.rightButton.wasReleasedThisFrame ||
+               mouse.middleButton.isPressed || mouse.middleButton.wasReleasedThisFrame;
     }
 
     private void BuildLayout(RectTransform root)
@@ -1133,6 +1146,7 @@ public class NativeSettingsPanel : MonoBehaviour
         if (activeEntry != null)
         {
             _bindingStatus = $"Pressed input is bound to {activeEntry.DisplayName}.";
+            NOVRPlugin.Log.LogInfo($"[NOVR] Native settings: held input is bound to '{activeEntry.DisplayName}' ({activeEntry.ControllerLabel} {activeEntry.BindingName}); jumping the bindings list to it.");
         }
 
         RenderCurrentTab();
@@ -1272,7 +1286,9 @@ public class NativeSettingsPanel : MonoBehaviour
     {
         try
         {
+            NOVRPlugin.Log.LogInfo($"[NOVR] Native settings: saving Rewired bindings via {ReInput.userDataStore?.GetType().Name ?? "no user data store"}, XR display running={Core.IsXrDisplayRunning()}");
             ReInput.userDataStore?.Save();
+            NOVRPlugin.Log.LogInfo($"[NOVR] Native settings: Rewired bindings saved, XR display running={Core.IsXrDisplayRunning()}");
         }
         catch (Exception exception)
         {
@@ -1619,6 +1635,7 @@ public class NativeSettingsPanel : MonoBehaviour
 
     private void ApplyAndSave()
     {
+        NOVRPlugin.Log.LogInfo($"[NOVR] Native settings: applying and saving settings, XR display running={Core.IsXrDisplayRunning()}");
         PlayerPrefs.Save();
         ApplyPlayerSettings();
         ApplyHudSettings();
