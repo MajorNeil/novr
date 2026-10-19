@@ -14,6 +14,9 @@ EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Uuvr.XInput", "Uuvr.XInput\Uuvr.XInput.vcxproj", "{189421C5-47DA-4948-999E-16CED2DE436D}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NOVR.Installer", "NOVR.Installer\NOVR.Installer.csproj", "{73540E94-C600-4D83-9F83-F54AF391F112}"
+	ProjectSection(ProjectDependencies) = postProject
+		{5C8DE940-7ECD-4B66-9711-52A03DCD6943} = {5C8DE940-7ECD-4B66-9711-52A03DCD6943}
+	EndProjectSection
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NOVR.Build", "NOVR.Build\NOVR.Build.csproj", "{5C8DE940-7ECD-4B66-9711-52A03DCD6943}"
 EndProject

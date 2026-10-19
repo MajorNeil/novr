@@ -1,4 +1,4 @@
-using System.IO.Compression;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 
@@ -9,8 +9,8 @@ public sealed class GitHubReleaseClient
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly HttpClient _httpClient;
-    
-    public ReleaseVersion FoundNOVRRelease { get; private set; } = (ReleaseVersion)"0.0.0";
+
+    public sealed record NovrRelease(ReleaseVersion Version, string AssetName, string DownloadUrl);
 
     public GitHubReleaseClient()
     {
@@ -19,21 +19,35 @@ public sealed class GitHubReleaseClient
         _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
     }
 
-    public async Task<string> DownloadLatestNovrReleaseAsync(string tempDir, IProgress<string> progress, CancellationToken cancellationToken)
+    // Null when the repository has no published release yet.
+    public async Task<NovrRelease?> TryGetLatestNovrReleaseAsync(IProgress<string> progress, CancellationToken cancellationToken)
     {
-        progress.Report("Checking latest NOVR release...");
-        var release = await GetLatestReleaseAsync(InstallerConstants.GitHubOwner, InstallerConstants.GitHubRepo, cancellationToken);
-        FoundNOVRRelease = (ReleaseVersion)release.TagName;
+        progress.Report($"Checking latest NOVR release on github.com/{InstallerConstants.ForkSource}...");
+        GitHubRelease release;
+        try
+        {
+            release = await GetLatestReleaseAsync(InstallerConstants.GitHubOwner, InstallerConstants.GitHubRepo, cancellationToken);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
         var asset = release.Assets.FirstOrDefault(asset =>
             asset.Name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) &&
             !asset.Name.Contains("bepinex", StringComparison.OrdinalIgnoreCase));
 
         if (asset is null)
         {
-            throw new InvalidOperationException("Latest NOVR release does not contain a ZIP asset.");
+            throw new InvalidOperationException($"Latest NOVR release {release.TagName} does not contain a ZIP asset.");
         }
 
-        return await DownloadAssetAsync(asset, tempDir, progress, release.TagName, cancellationToken);
+        return new NovrRelease((ReleaseVersion)release.TagName, asset.Name, asset.BrowserDownloadUrl);
+    }
+
+    public Task<string> DownloadNovrReleaseAsync(NovrRelease release, string tempDir, IProgress<string> progress, CancellationToken cancellationToken)
+    {
+        return DownloadAssetAsync(release.AssetName, release.DownloadUrl, tempDir, progress, release.Version.ToString(), cancellationToken);
     }
 
     public async Task<string> DownloadLatestBepInEx5Async(string tempDir, IProgress<string> progress, CancellationToken cancellationToken)
@@ -50,7 +64,7 @@ public sealed class GitHubReleaseClient
             throw new InvalidOperationException("Latest BepInEx 5 release does not contain a Windows x64 ZIP asset.");
         }
 
-        return await DownloadAssetAsync(asset, tempDir, progress, release.TagName, cancellationToken);
+        return await DownloadAssetAsync(asset.Name, asset.BrowserDownloadUrl, tempDir, progress, release.TagName, cancellationToken);
     }
 
     private async Task<GitHubRelease> GetLatestReleaseAsync(string owner, string repo, CancellationToken cancellationToken)
@@ -70,13 +84,13 @@ public sealed class GitHubReleaseClient
         return release ?? throw new InvalidOperationException("Could not find a BepInEx 5 release.");
     }
 
-    private async Task<string> DownloadAssetAsync(GitHubAsset asset, string tempDir, IProgress<string> progress, string releaseName, CancellationToken cancellationToken)
+    private async Task<string> DownloadAssetAsync(string assetName, string downloadUrl, string tempDir, IProgress<string> progress, string releaseName, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(tempDir);
-        var destination = Path.Combine(tempDir, asset.Name);
-        progress.Report($"Downloading {asset.Name} from release {releaseName}...");
+        var destination = Path.Combine(tempDir, assetName);
+        progress.Report($"Downloading {assetName} from release {releaseName}...");
 
-        await using var remote = await _httpClient.GetStreamAsync(asset.BrowserDownloadUrl, cancellationToken);
+        await using var remote = await _httpClient.GetStreamAsync(downloadUrl, cancellationToken);
         await using var local = File.Create(destination);
         await remote.CopyToAsync(local, cancellationToken);
         return destination;

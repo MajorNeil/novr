@@ -48,7 +48,7 @@ public sealed class FileSystemInstaller
     private void CreateVersionMetaData(string path, string releaseName)
     {
         var versionFile = Path.Combine(path, InstallerConstants.VersionFileName);
-        File.WriteAllText(versionFile, releaseName);
+        File.WriteAllText(versionFile, releaseName + "\n" + InstallerConstants.VersionFileSourcePrefix + InstallerConstants.ForkSource + "\n");
     }
 
     public async Task UninstallNovrAsync(GameInstallInfo game, IProgress<string> progress, CancellationToken cancellationToken)
