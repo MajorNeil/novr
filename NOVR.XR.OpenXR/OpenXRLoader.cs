@@ -666,6 +666,14 @@ namespace UnityEngine.XR.OpenXR
 
             if (loader != null) loader.currentOpenXRState = e;
 
+            // NOVR: these end or restart the XR session, after which the game renders flat to the monitor.
+            if (e is OpenXRFeature.NativeEvent.XrStopping or OpenXRFeature.NativeEvent.XrExiting or
+                OpenXRFeature.NativeEvent.XrLossPending or OpenXRFeature.NativeEvent.XrInstanceLossPending or
+                OpenXRFeature.NativeEvent.XrRestartRequested)
+            {
+                Debug.LogWarning($"[NOVR] OpenXR runtime sent {e}; the XR session is stopping.");
+            }
+
             switch (e)
             {
                 case OpenXRFeature.NativeEvent.XrRestartRequested:

@@ -1,6 +1,7 @@
 ﻿using System.IO;
 using System.Reflection;
 using BepInEx;
+using BepInEx.Logging;
 using HarmonyLib;
 using NOVR.VrCamera;
 using NOVR.VrUi;
@@ -24,10 +25,12 @@ public class NOVRPlugin : BaseUnityPlugin
     
     private static NOVRPlugin _instance;
     public static string ModFolderPath { get; private set; }
+    internal static ManualLogSource Log { get; private set; } = null!;
 
     public NOVRPlugin()
     {
-        
+        Log = Logger;
+
         InputTracking.trackingAcquired += TrackingAcquired;
         _instance = this;
         ModFolderPath = Path.GetDirectoryName(Assembly.GetAssembly(typeof(NOVRPlugin)).Location);
