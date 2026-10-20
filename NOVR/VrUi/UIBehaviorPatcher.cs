@@ -36,7 +36,6 @@ public class UIBehaviorPatcher : NOVRBehaviour
     private static Dictionary<Component, Type> _toPatch_component = new();
     private static Dictionary<string, Type> _toPatch_name = new();
     private static List<GameObject> _toReactivate = new();
-    private bool _controlMapperWasOpen;
 
 
     static UIBehaviorPatcher()
@@ -103,20 +102,9 @@ public class UIBehaviorPatcher : NOVRBehaviour
         var controlMapper = GameManager.controlMapper;
         var isOpen = controlMapper != null && controlMapper.isOpen;
         var canvas = isOpen ? controlMapper!.GetComponentInChildren<Canvas>(true) : null;
-
-        if (isOpen != _controlMapperWasOpen)
-        {
-            _controlMapperWasOpen = isOpen;
-            var canvasInfo = canvas != null
-                ? $"canvas '{canvas.name}' renderMode={canvas.renderMode}, root={canvas.isRootCanvas}, sortingOrder={canvas.sortingOrder}"
-                : "no canvas";
-            NOVRPlugin.Log.LogInfo($"UIBehaviorPatcher: ControlMapper {(isOpen ? "opened" : "closed")} ({canvasInfo}), XR display running={Core.IsXrDisplayRunning()}");
-        }
-
         if (canvas == null || canvas.renderMode == RenderMode.WorldSpace || !canvas.isRootCanvas ||
             canvas.TryGetComponent<NOVRControlMapperBehavior>(out _)) return;
 
-        NOVRPlugin.Log.LogInfo($"UIBehaviorPatcher: Moving ControlMapper canvas '{canvas.name}' from {canvas.renderMode} into VR UI space");
         canvas.gameObject.AddComponent<NOVRControlMapperBehavior>();
     }
 

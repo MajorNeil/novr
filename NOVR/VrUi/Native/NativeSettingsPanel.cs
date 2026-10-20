@@ -1146,7 +1146,6 @@ public class NativeSettingsPanel : MonoBehaviour
         if (activeEntry != null)
         {
             _bindingStatus = $"Pressed input is bound to {activeEntry.DisplayName}.";
-            NOVRPlugin.Log.LogInfo($"[NOVR] Native settings: held input is bound to '{activeEntry.DisplayName}' ({activeEntry.ControllerLabel} {activeEntry.BindingName}); jumping the bindings list to it.");
         }
 
         RenderCurrentTab();
@@ -1286,9 +1285,7 @@ public class NativeSettingsPanel : MonoBehaviour
     {
         try
         {
-            NOVRPlugin.Log.LogInfo($"[NOVR] Native settings: saving Rewired bindings via {ReInput.userDataStore?.GetType().Name ?? "no user data store"}, XR display running={Core.IsXrDisplayRunning()}");
             ReInput.userDataStore?.Save();
-            NOVRPlugin.Log.LogInfo($"[NOVR] Native settings: Rewired bindings saved, XR display running={Core.IsXrDisplayRunning()}");
         }
         catch (Exception exception)
         {
@@ -1635,7 +1632,6 @@ public class NativeSettingsPanel : MonoBehaviour
 
     private void ApplyAndSave()
     {
-        NOVRPlugin.Log.LogInfo($"[NOVR] Native settings: applying and saving settings, XR display running={Core.IsXrDisplayRunning()}");
         PlayerPrefs.Save();
         ApplyPlayerSettings();
         ApplyHudSettings();

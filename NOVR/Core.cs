@@ -23,7 +23,7 @@ public class Core : MonoBehaviour
     
     private Aircraft _aircraft;
     private Aircraft _oldAircraft;
-    private bool? _lastXrDisplayRunning;
+    private bool _xrDisplayWasRunning;
     private static readonly List<XRDisplaySubsystem> XrDisplaySubsystems = new();
 
     public static void Create()
@@ -68,10 +68,10 @@ public class Core : MonoBehaviour
     private void Update()
     {
         UpdatePhysicsRate();
-        LogXrStateChanges();
+        WarnIfXrDisplayStopped();
     }
 
-    public static bool IsXrDisplayRunning()
+    private static bool IsXrDisplayRunning()
     {
         SubsystemManager.GetSubsystems(XrDisplaySubsystems);
         foreach (var displaySubsystem in XrDisplaySubsystems)
@@ -82,30 +82,16 @@ public class Core : MonoBehaviour
         return false;
     }
 
-    // If XR stops, the game falls back to rendering flat on the monitor; log it next to the UI/settings log lines.
-    private void LogXrStateChanges()
+    // If XR stops, the game falls back to rendering flat on the monitor.
+    private void WarnIfXrDisplayStopped()
     {
         var xrDisplayRunning = IsXrDisplayRunning();
-        if (_lastXrDisplayRunning == xrDisplayRunning) return;
-
-        var message = $"XR display running: {_lastXrDisplayRunning?.ToString() ?? "unknown"} -> {xrDisplayRunning} " +
-                      $"(frame {Time.frameCount}, control mapper open: {GameManager.controlMapper != null && GameManager.controlMapper.isOpen})";
-        if (_lastXrDisplayRunning == true && !xrDisplayRunning)
+        if (_xrDisplayWasRunning && !xrDisplayRunning)
         {
-            NOVRPlugin.Log.LogWarning(message);
-        }
-        else
-        {
-            NOVRPlugin.Log.LogInfo(message);
+            NOVRPlugin.Log.LogWarning("[NOVR] XR display stopped; the game is rendering to the monitor only.");
         }
 
-        _lastXrDisplayRunning = xrDisplayRunning;
-    }
-
-    // Keyboard and mouse only reach the game while its window has focus (e.g. not the SteamVR window).
-    private void OnApplicationFocus(bool hasFocus)
-    {
-        NOVRPlugin.Log.LogInfo($"Game window focus: {hasFocus}");
+        _xrDisplayWasRunning = xrDisplayRunning;
     }
 
     private void UpdatePhysicsRate()

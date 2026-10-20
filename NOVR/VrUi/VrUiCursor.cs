@@ -75,8 +75,6 @@ public class VrUiCursor: NOVRBehaviour
     private BaseInputModule? _lastSeenUiModule;
     private Mouse? _virtualMouse;
     private Mouse? _realMouse;
-    private Rect _loggedCameraPixelRect;
-    private Vector2Int _loggedScreenSize;
 
 
     private int ScreenWidth => Screen.width;
@@ -218,7 +216,6 @@ public class VrUiCursor: NOVRBehaviour
         Vector3 localDirection = Quaternion.Euler(-cursorPitch, cursorYaw, 0f) * Vector3.forward;
         Quaternion referenceRotation = GetProjectionReferenceRotation();
         Vector3 worldDirection = referenceRotation * localDirection;
-        LogPointerSpaceChanges(camera);
         Vector2 inScreenSpace = ToEventScreenPoint(camera, camera.transform.position + worldDirection * DefaultProjectionDistance);
         float cursorDistance = GetDistanceUnderCursor(inScreenSpace);
         Vector3 pos = camera.transform.position + worldDirection * cursorDistance;
@@ -247,22 +244,6 @@ public class VrUiCursor: NOVRBehaviour
             NOVRHeadsetData.CalibrateTranslation();
             NOVRHeadsetData.CalibrateRotation();
         }
-
-        NOVRPlugin.Log.LogInfo($"[{nameof(VrUiCursor)}] Recentered cursor (headset recentered: {!_hasProjectionReferenceOverride}).");
-    }
-
-    private void LogPointerSpaceChanges(Camera camera)
-    {
-        var pixelRect = camera.pixelRect;
-        var screenSize = new Vector2Int(ScreenWidth, ScreenHeight);
-        if (pixelRect == _loggedCameraPixelRect && screenSize == _loggedScreenSize) return;
-
-        _loggedCameraPixelRect = pixelRect;
-        _loggedScreenSize = screenSize;
-        NOVRPlugin.Log.LogInfo(
-            $"[{nameof(VrUiCursor)}] Pointer space: UI camera '{camera.name}' pixelRect={pixelRect}, window={screenSize.x}x{screenSize.y}, " +
-            $"stereo={camera.stereoEnabled}, XR display running={Core.IsXrDisplayRunning()}. " +
-            "If pixelRect differs from the window size, clicks used to land away from the drawn cursor.");
     }
 
     private void EnsureCursorCanvas(Camera uiCaptureCamera)
@@ -466,10 +447,6 @@ public class VrUiCursor: NOVRBehaviour
         EventSystem.current.RaycastAll(pointerEventData, results);
         
         Debug.Log($"[VrUiCursor] Click Raycast at screenPos={screenPos}: found {results.Count} results");
-        NOVRPlugin.Log.LogInfo(
-            $"[{nameof(VrUiCursor)}] Click at screenPos={screenPos} (UI camera pixelRect={UiCamera?.pixelRect}, window={ScreenWidth}x{ScreenHeight}), " +
-            $"cursor world={CursorPosition}, UI module={EventSystem.current.currentInputModule?.GetType().Name}, " +
-            $"first hit='{(results.Count > 0 ? GetGameObjectPath(results[0].gameObject) : "none")}'");
         for (int i = 0; i < results.Count; i++)
         {
             var result = results[i];
@@ -525,7 +502,7 @@ public class VrUiCursor: NOVRBehaviour
         try
         {
             if (_virtualMouse == null) return false;
-            NOVRPlugin.Log.LogInfo($"[{nameof(VrUiCursor)}] Restricting InputSystemUIInputModule on '{uiModule.name}' to VirtualMouse (path: {_virtualMouse.path})");
+            Debug.Log($"[NOVR] Restricting InputSystemUIInputModule actions to VirtualMouse (path: {_virtualMouse.path})");
             RestrictActionToVirtualMouse(uiModule.point?.action, _virtualMouse.path);
             RestrictActionToVirtualMouse(uiModule.leftClick?.action, _virtualMouse.path);
             RestrictActionToVirtualMouse(uiModule.middleClick?.action, _virtualMouse.path);
