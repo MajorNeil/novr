@@ -346,6 +346,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                 var replacedSource = info.ModState == InstallState.FullyInstalled && !info.IsForkInstall
                     ? info.InstalledSourceDescription
                     : null;
+                var updatedFrom = info.ModState == InstallState.FullyInstalled && info.Version < package.Version
+                    ? info.Version.ToString()
+                    : null;
 
                 await _installer.InstallOrUpdateNovrAsync(
                     info,
@@ -358,9 +361,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
                 GameInfo = _gameLocator.Inspect(info.GameDir);
                 // Through the same Progress as the step messages, which are posted, so this one lands last.
-                ((IProgress<string>)progress).Report(replacedSource is null
-                    ? $"{installType} complete. NOVR {package.Version} installed."
-                    : $"Replaced NOVR from {replacedSource} with NOVR {package.Version}.");
+                ((IProgress<string>)progress).Report(
+                    replacedSource is not null ? $"Replaced NOVR from {replacedSource} with NOVR {package.Version}." :
+                    updatedFrom is not null ? $"Update complete. NOVR {updatedFrom} → {package.Version}." :
+                    $"{installType} complete. NOVR {package.Version} installed.");
                 Details = BuildDetails(GameInfo) + Environment.NewLine + protonMessage;
             }
             finally

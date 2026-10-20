@@ -46,6 +46,7 @@ public class NOUIManager : NOVRBehaviour
         UIBehaviorPatcher.DoPatching();
         Create<VrUiCursor>(transform);
         Create<NativeVrUiRoot>(transform);
+        Create<InGameVrUiBar>(transform);
         ConfigureUiCameras();
     }
 
@@ -61,6 +62,14 @@ public class NOUIManager : NOVRBehaviour
         UpdateSmoothedPosition();
     }
     
+    // Drops the smoothing lag, e.g. after a recenter turned the camera in one frame.
+    public void SnapSmoothedReference()
+    {
+        var cam = CockpitHudCamera;
+        CockpitHudReference.transform.position = cam.transform.position;
+        CockpitHudReference.transform.localRotation = cam.transform.localRotation;
+    }
+
     private void UpdateSmoothedPosition()
     {
         var smoothedForwardReference = CockpitHudReference;

@@ -282,7 +282,18 @@ public class Patcher
         foreach (var file in dir.GetFiles())
         {
             var targetFilePath = Path.Combine(destinationDir, file.Name);
-            file.CopyTo(targetFilePath, true);
+            // Files already in place are skipped: they can be locked by the game (or a lingering instance of it), and
+            // one failed copy used to abort the rest of the payload.
+            if (HasSameContent(file, targetFilePath)) continue;
+
+            try
+            {
+                file.CopyTo(targetFilePath, true);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                Console.WriteLine($"[NOVR.Patcher] Could not update '{targetFilePath}', it will be retried next launch: {exception.Message}");
+            }
         }
 
         foreach (var subDir in dirs)
@@ -292,6 +303,20 @@ public class Patcher
         }
 
         Console.WriteLine($"Copied files from:\n> {sourceDir}\nto:\n> {destinationDir}");
+    }
+
+    private static bool HasSameContent(FileInfo source, string targetFilePath)
+    {
+        try
+        {
+            var target = new FileInfo(targetFilePath);
+            return target.Exists && target.Length == source.Length &&
+                   File.ReadAllBytes(source.FullName).SequenceEqual(File.ReadAllBytes(targetFilePath));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
 #if CPP
