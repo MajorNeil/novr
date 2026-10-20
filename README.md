@@ -62,7 +62,17 @@ Use this only if the installer does not work for your setup.
 
 On game startup, the NOVR BepInEx patcher copies required XR support files into `NuclearOption_Data`. These files may be overwritten every time the game starts.
 
-If the game is already running while installing or rebuilding, Windows may prevent those files from being replaced. Close Nuclear Option before installing, updating, or building the mod.
+If the game is already running while installing or rebuilding, Windows may prevent those files from being replaced. Close Nuclear Option before installing, updating, or building the mod. Files that are already up to date are skipped, and a file that can't be replaced is logged and retried on the next launch instead of stopping the rest of the copy.
+
+### In-game VR UI controls
+
+While an in-game menu (pause menu, map, settings, key bindings) has the cursor up, a small **VR UI SETTINGS** button sits below the menus. It opens a panel with:
+
+- **MENUS**: **SIZE -/+** and **CLOSER/FARTHER** for the in-game menus, map and key binding screen.
+- **HUD**: **SIZE -/+** for the flight HUD (speed, altitude, heading and artificial horizon readouts, pitch ladder, weapon panels and target markers). Markers keep pointing at what they mark; only how big they're drawn changes.
+- **VR CENTER** (recenters after 2 seconds, so look where forward should be) and **CLOSE**.
+
+The values are saved in the `In-Game UI` section of `BepInEx/config/deltawing.novr.cfg`. NOVR's own main menu keeps its separate **VR UI SETTINGS** page.
 
 ### Linux/Proton notes
 

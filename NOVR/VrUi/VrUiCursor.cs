@@ -14,6 +14,8 @@ public class VrUiCursor: NOVRBehaviour
     public static VrUiCursor? I => Instance;
 
     public bool IsActive => _cursor != null && _cursor.activeSelf;
+    // Set while NOVR's native menu is showing and owns the cursor's forward direction.
+    public bool HasProjectionReferenceOverride => _hasProjectionReferenceOverride;
     public Vector3 CursorPosition => _cursor != null ? _cursor.transform.position : Vector3.zero;
 
     protected override void Awake()
@@ -237,7 +239,7 @@ public class VrUiCursor: NOVRBehaviour
     // Home puts the OS mouse back in the middle of the game window, which maps to the projection reference forward.
     // The native menu recenters the headset itself on Home; everywhere else the headset is recentered here so that
     // reference forward (where the in-game menus sit) is where the player is looking.
-    private void RecenterCursor()
+    public void RecenterCursor()
     {
         _realMouse?.WarpCursorPosition(new Vector2(ScreenWidth * 0.5f, ScreenHeight * 0.5f));
         if (!_hasProjectionReferenceOverride)

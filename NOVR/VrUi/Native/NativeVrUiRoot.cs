@@ -58,6 +58,7 @@ public class NativeVrUiRoot : NOVRBehaviour
     private float _nextMainMenuScanTime;
     private float _pendingRecenterTime;
     private bool _recenterPending;
+    private bool _recaptureAnchorAfterRecenter;
     private bool _menuAnchorInitialized;
     private float _lastNativeUiVisibleTime = -100f;
     private Vector3 _menuAnchorPosition;
@@ -267,6 +268,16 @@ public class NativeVrUiRoot : NOVRBehaviour
         _lastNativeUiVisibleTime = Time.unscaledTime;
         SetUtilityWidgetMode(UtilityWidgetMode.Recenter);
 
+        // The recenter re-zeroed the headset last frame, so the camera now faces "forward" where the player looks;
+        // move the menu there too, from the camera itself because the smoothed reference is still turning.
+        if (_recaptureAnchorAfterRecenter)
+        {
+            _recaptureAnchorAfterRecenter = false;
+            NOUIManager.I.SnapSmoothedReference();
+            CaptureMenuAnchor();
+            NOVRPlugin.Log.LogInfo($"[NOVR] Native VR UI anchor recaptured after recenter: yaw {_menuAnchorRotation.eulerAngles.y:0.0}, position {_menuAnchorPosition}");
+        }
+
         if (!_menuAnchorInitialized)
         {
             CaptureMenuAnchor();
@@ -347,10 +358,10 @@ public class NativeVrUiRoot : NOVRBehaviour
 
     private void RecenterMenuImmediately()
     {
-        // CaptureMenuAnchor();
-        // UpdatePlacement(true);
         NOVRHeadsetData.CalibrateTranslation();
         NOVRHeadsetData.CalibrateRotation();
+        // The camera picks up the new calibration later this frame; the menu follows on the next placement.
+        _recaptureAnchorAfterRecenter = true;
         _recenterPending = false;
         UpdateRecenterButtonText();
         Debug.Log("[NOVR] Native VR UI recentered.");

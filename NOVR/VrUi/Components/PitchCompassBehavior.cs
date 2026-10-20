@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Reflection;
 using HarmonyLib;
 using UnityEngine;
@@ -12,6 +13,7 @@ public class PitchCompassBehavior : MonoBehaviour
     private const float PitchRangeDegrees = 180f;
     private const float PitchStepDegrees = PitchRangeDegrees / FullPitchStepCount;
     private const string SliceRootName = "NOVR_PitchCompassSlices";
+    private const float SliceScale = 0.8f;
 
     private static readonly FieldInfo PitchCompassField = AccessTools.Field(typeof(global::FlightHud), "pitchCompass");
     private static readonly FieldInfo CockpitTransformField = AccessTools.Field(typeof(global::FlightHud), "cockpitTransform");
@@ -20,6 +22,8 @@ public class PitchCompassBehavior : MonoBehaviour
     private RectTransform _sliceRoot;
     private float _fullTextureDisplayHeight;
     private bool _hasBuiltSlices;
+    private readonly List<Transform> _slices = new();
+    private float _appliedHudScale = -1f;
     
     
     private FlightHud _flightHud;
@@ -54,6 +58,7 @@ public class PitchCompassBehavior : MonoBehaviour
         _sliceRoot.transform.rotation = Quaternion.LookRotation(targetForward, targetUp);
         
         _sourcePitchCompass.enabled = false;
+        ApplyHudScale();
     }
     
 
@@ -114,14 +119,30 @@ public class PitchCompassBehavior : MonoBehaviour
             slice.transform.SetParent(_sliceRoot, true);
             opposite.transform.SetParent(_sliceRoot, true);
 
-            slice.transform.localScale = new Vector3(0.8f, 0.8f, 0.8f);
-            opposite.transform.localScale = new Vector3(0.8f, 0.8f, 0.8f);
+            slice.transform.localScale = Vector3.one * SliceScale;
+            opposite.transform.localScale = Vector3.one * SliceScale;
+            _slices.Add(slice.transform);
+            _slices.Add(opposite.transform);
         }
         
         LayerHelper.SetLayerRecursive(_sliceRoot, LayerHelper.GetVrUiLayer());
 
         _hasBuiltSlices = true;
         Debug.Log($"{nameof(PitchCompassBehavior)}: Split pitch compass into {SliceCount} slices");
+    }
+
+    // The slices sit at their pitch angles around the origin, so the HUD canvas scale moves them out without changing
+    // how big they look; their own scale sizes the rungs and numbers, keeping the rungs on the horizon angles.
+    private void ApplyHudScale()
+    {
+        var hudScale = InGameUiPlacement.HudScale;
+        if (Mathf.Approximately(hudScale, _appliedHudScale)) return;
+
+        _appliedHudScale = hudScale;
+        foreach (var slice in _slices)
+        {
+            if (slice != null) slice.localScale = Vector3.one * (SliceScale * hudScale);
+        }
     }
 
     private bool RefreshCockpitTransform()
