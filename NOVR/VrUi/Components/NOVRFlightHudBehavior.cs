@@ -8,7 +8,6 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
     // The scale the canvas kept from its overlay days (the desktop scale factor), which the HUD layout is tuned for.
     private Vector3 _baseScale;
     private Vector3 _appliedScale;
-    private float _loggedHudScale = -1f;
 
     public override void Awake()
     {
@@ -48,11 +47,6 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
         if (transform.localScale != _appliedScale) _baseScale = transform.localScale;
         _appliedScale = _baseScale * hudScale;
         transform.localScale = _appliedScale;
-        if (!Mathf.Approximately(hudScale, _loggedHudScale))
-        {
-            _loggedHudScale = hudScale;
-            NOVRPlugin.Log.LogInfo($"[NOVR] Flight HUD '{name}': scale {hudScale:0.00}x of base {_baseScale.x:0.000} (screen factor {Screen.height / 1080f:0.000})");
-        }
     }
     
     private void MoveHmdPanelToHud(string panelName, Transform noVrHudParent, Vector3 localPosition, Vector3 localScale)

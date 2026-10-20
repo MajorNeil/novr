@@ -275,7 +275,6 @@ public class NativeVrUiRoot : NOVRBehaviour
             _recaptureAnchorAfterRecenter = false;
             NOUIManager.I.SnapSmoothedReference();
             CaptureMenuAnchor();
-            NOVRPlugin.Log.LogInfo($"[NOVR] Native VR UI anchor recaptured after recenter: yaw {_menuAnchorRotation.eulerAngles.y:0.0}, position {_menuAnchorPosition}");
         }
 
         if (!_menuAnchorInitialized)

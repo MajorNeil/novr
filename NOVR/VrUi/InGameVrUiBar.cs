@@ -159,7 +159,6 @@ public class InGameVrUiBar : NOVRBehaviour
         LayerHelper.SetLayerRecursive(_root.transform, LayerHelper.GetVrUiLayer());
         SetExpanded(false);
         _root.SetActive(false);
-        NOVRPlugin.Log.LogInfo("[NOVR] In-game VR UI button created.");
     }
 
     private void OnCenterClicked()
