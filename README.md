@@ -66,7 +66,13 @@ If the game is already running while installing or rebuilding, Windows may preve
 
 ### In-game VR UI controls
 
-While an in-game menu (pause menu, map, settings, key bindings) has the cursor up, a bar under your view offers **VR CENTER** (recenters after 2 seconds, so look where forward should be), **SIZE -/+** and **CLOSER/FARTHER** for the in-game menus, map and HUD canvas. The values are saved in the `In-Game UI` section of `BepInEx/config/deltawing.novr.cfg`. NOVR's own main menu keeps its separate **VR UI SETTINGS** page.
+While an in-game menu (pause menu, map, settings, key bindings) has the cursor up, a small **VR UI SETTINGS** button sits below the menus. It opens a panel with:
+
+- **MENUS**: **SIZE -/+** and **CLOSER/FARTHER** for the in-game menus, map and key binding screen.
+- **HUD**: **SIZE -/+** for the flight HUD (speed, altitude, heading and artificial horizon readouts, pitch ladder, weapon panels and target markers). Markers keep pointing at what they mark; only how big they're drawn changes.
+- **VR CENTER** (recenters after 2 seconds, so look where forward should be) and **CLOSE**.
+
+The values are saved in the `In-Game UI` section of `BepInEx/config/deltawing.novr.cfg`. NOVR's own main menu keeps its separate **VR UI SETTINGS** page.
 
 ### Linux/Proton notes
 

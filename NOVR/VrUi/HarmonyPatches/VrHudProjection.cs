@@ -145,7 +145,9 @@ internal static class VrHudProjection
 
     public static float ReferencePixelsToHudDistance(float pixels) => pixels / GetScreenHeightScale();
 
-    private static float GetScreenHeightScale() => 1080.0f / Screen.height;
+    // Reference pixels per HUD unit. The flight HUD canvas keeps the desktop scale factor (Screen.height / 1080) it had
+    // as an overlay, times the player's HUD scale (NOVRFlightHudBehavior), so lines and offsets follow that too.
+    private static float GetScreenHeightScale() => 1080.0f / (Screen.height * InGameUiPlacement.HudScale);
 
     private static Vector3 DirectionFromYawPitch(float yawDegrees, float pitchDegrees)
     {
