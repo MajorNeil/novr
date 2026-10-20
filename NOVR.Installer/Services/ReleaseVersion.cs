@@ -12,7 +12,8 @@ public readonly struct ReleaseVersion
         if (string.IsNullOrWhiteSpace(lines[0]))
             throw new ArgumentException("Meta data couldn't find version on first line.", nameof(meta));
         
-        Version = lines[0].Trim();
+        // Release tags may be written as "v1.2.3".
+        Version = lines[0].Trim().TrimStart('v', 'V');
         
         
         string[] versionParts = Version.Split('.');

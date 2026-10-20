@@ -37,15 +37,32 @@
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.2.6" />
   </ItemGroup>
 
+  <!-- Bundle the mod build (dist/NOVR.zip, made by NOVR.Build in a Release solution build) so the installer can install
+       it without a published GitHub release. Pass -p:BundleNovrPackage=false for an installer that only downloads. -->
+  <PropertyGroup>
+    <BundledNovrPackagePath>$(InstallerDistDir)/NOVR.zip</BundledNovrPackagePath>
+    <BundleNovrPackage Condition="'$(BundleNovrPackage)' == '' And Exists('$(BundledNovrPackagePath)')">true</BundleNovrPackage>
+    <BundledNovrVersion>$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../NOVR/NOVRPlugin.cs')), '(?&lt;="NOVR",\s*")\d+\.\d+\.\d+'))</BundledNovrVersion>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(BundleNovrPackage)' == 'true'">
+    <EmbeddedResource Include="$(BundledNovrPackagePath)" LogicalName="NOVR.zip" />
+    <AssemblyMetadata Include="BundledNovrVersion" Value="$(BundledNovrVersion)" />
+  </ItemGroup>
+
+  <Target Name="ReportBundledNovrPackage" BeforeTargets="CoreCompile" Condition="'$(BundleNovrPackage)' == 'true'">
+    <Message Importance="high" Text="Bundling $(BundledNovrPackagePath) into the installer as NOVR $(BundledNovrVersion)." />
+  </Target>
+
   <Target Name="PublishInstallersToDist"
           AfterTargets="Build"
           Condition="'$(Configuration)' == 'Release' And '$(IsPublishingInstaller)' != 'true'">
 
     <MakeDir Directories="$(InstallerDistDir)" />
 
-    <Exec Command="dotnet publish &quot;$(MSBuildProjectFullPath)&quot; -c $(Configuration) -r linux-x64 --no-restore -p:IsPublishingInstaller=true -p:SelfContained=true -p:PublishSingleFile=true -p:PublishDir=&quot;$(InstallerPublishIntermediateDir)/linux-x64/&quot;" />
+    <Exec Command="dotnet publish &quot;$(MSBuildProjectFullPath)&quot; -c $(Configuration) -r linux-x64 --no-restore -p:IsPublishingInstaller=true -p:BundleNovrPackage=$(BundleNovrPackage) -p:BundledNovrPackagePath=&quot;$(BundledNovrPackagePath)&quot; -p:SelfContained=true -p:PublishSingleFile=true -p:PublishDir=&quot;$(InstallerPublishIntermediateDir)/linux-x64/&quot;" />
 
-    <Exec Command="dotnet publish &quot;$(MSBuildProjectFullPath)&quot; -c $(Configuration) -r win-x64 --no-restore -p:IsPublishingInstaller=true -p:SelfContained=true -p:PublishSingleFile=true -p:PublishDir=&quot;$(InstallerPublishIntermediateDir)/win-x64/&quot;" />
+    <Exec Command="dotnet publish &quot;$(MSBuildProjectFullPath)&quot; -c $(Configuration) -r win-x64 --no-restore -p:IsPublishingInstaller=true -p:BundleNovrPackage=$(BundleNovrPackage) -p:BundledNovrPackagePath=&quot;$(BundledNovrPackagePath)&quot; -p:SelfContained=true -p:PublishSingleFile=true -p:PublishDir=&quot;$(InstallerPublishIntermediateDir)/win-x64/&quot;" />
 
     <Copy
             SourceFiles="$(InstallerPublishIntermediateDir)/linux-x64/NOVR.Installer"

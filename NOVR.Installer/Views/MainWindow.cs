@@ -51,7 +51,9 @@ public sealed class MainWindow : Window
 
         root.Children.Add(new TextBlock
         {
-            Text = "Install, update, repair, or remove NOVR. BepInEx 5 will be installed automatically if needed.",
+            Text = $"Install, update, repair, or remove NOVR from github.com/{InstallerConstants.ForkSource}. " +
+                   $"A copy installed by the original NOVR installer ({InstallerConstants.OriginalSource}) can be replaced or removed too. " +
+                   "BepInEx 5 will be installed automatically if needed.",
             TextWrapping = TextWrapping.Wrap,
             Opacity = 0.85
         });
@@ -159,10 +161,10 @@ public sealed class MainWindow : Window
 
         var repair = new Button
         {
-            Content = "Repair / Update",
             MinWidth = 150,
             MinHeight = 42
         };
+        repair.Bind(ContentControl.ContentProperty, new Avalonia.Data.Binding(nameof(MainWindowViewModel.RepairUpdateText)));
         repair.Bind(Button.CommandProperty, new Avalonia.Data.Binding(nameof(MainWindowViewModel.RepairUpdateCommand)));
 
         var uninstall = new Button

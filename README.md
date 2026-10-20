@@ -2,12 +2,14 @@
 
 NOVR is a reworked version of [UUVR](https://github.com/Raicuparta/uuvr) designed and optimized for Nuclear Option.
 
+This is a fork of [InfernoSuperNova/novr](https://github.com/InfernoSuperNova/novr). It installs into the same folders, and its installer can replace or remove a copy of NOVR installed by the original installer.
+
 ## User Installation
 
 ### Recommended: GUI installer
 
 1. Close Nuclear Option before installing or updating the mod.
-2. Download the latest installer from the [NOVR releases page](https://github.com/InfernoSuperNova/novr/releases/latest):
+2. Download the latest installer from the [releases page](https://github.com/MajorNeil/novr/releases/latest), or build it yourself (see [Installer development](#installer-development)):
     - **Windows:** `NOVR.Installer-Win.exe`
     - **Linux/Proton:** `NOVR.Installer-Linux`
 3. Run the installer.
@@ -19,17 +21,19 @@ NOVR is a reworked version of [UUVR](https://github.com/Raicuparta/uuvr) designe
 
 The installer can also update, repair, or uninstall NOVR after it is installed.
 
+If NOVR is already installed by the original installer, it is detected and the installer offers **Replace with this build** (installs this fork in its place) and **Uninstall NOVR** (removes it). Your NOVR settings in `BepInEx/config` are kept either way.
+
 ### What the installer does
 
 The installer:
 
 - Finds your Nuclear Option install.
 - Installs BepInEx 5.x if it is missing.
-- Downloads the latest NOVR release zip.
+- Uses the NOVR build bundled into the installer, or downloads the latest release zip from this fork if that is newer.
 - Installs NOVR into:
     - `BepInEx/plugins/NOVR`
     - `BepInEx/patchers/NOVR`
-- Writes the installed NOVR version to `BepInEx/plugins/NOVR/version.txt`.
+- Writes the installed NOVR version to `BepInEx/plugins/NOVR/version.txt`, plus a `source=MajorNeil/novr` line so a build from this fork can be told apart from one installed by the original installer.
 - On Linux/Proton, attempts to configure the `winhttp` Wine override needed by BepInEx.
 
 Use BepInEx 5.x only. Do not use BepInEx 6.x unless the project explicitly says it is supported.
@@ -100,7 +104,9 @@ Outputs:
 - `dist/NOVR.Installer-Linux`
 - `dist/NOVR.Installer-Win.exe`
 
-Building the full solution in `Release` also creates `dist/NOVR.zip`, ready to upload as the mod release asset.
+Building the full solution in `Release` also creates `dist/NOVR.zip`, ready to upload as the mod release asset. The solution builds `NOVR.zip` before the installers and embeds it into them, so the installers in `dist/` can install that build without any GitHub release (pass `-p:BundleNovrPackage=false` for installers that only download). The bundled version comes from the `BepInPlugin` version in `NOVR/NOVRPlugin.cs`.
+
+To publish a release for the installer's update check, create a release on this repository whose tag is the plugin version (for example `0.4.5`) and upload `dist/NOVR.zip` and the two installers to it.
 
 ## License
 
