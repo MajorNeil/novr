@@ -5,6 +5,7 @@ using BepInEx.Logging;
 using HarmonyLib;
 using NOVR.VrCamera;
 using NOVR.VrUi;
+using NOVR.VrUi.HarmonyPatches;
 using NOVR.VrUi.SpecialBehavior;
 using UnityEngine.SceneManagement;
 using UnityEngine.XR;
@@ -19,7 +20,7 @@ namespace NOVR;
 [BepInPlugin(
     "deltawing.novr",
     "NOVR",
-    "0.4.9")]
+    "0.4.14")]
 public class NOVRPlugin : BaseUnityPlugin
 {
     
@@ -37,6 +38,7 @@ public class NOVRPlugin : BaseUnityPlugin
         
         new ModConfiguration(Config);
         Harmony.CreateAndPatchAll(Assembly.GetExecutingAssembly());
+        GameErrorPopupPatch.Apply();
         Core.Create();
     }
 

@@ -80,9 +80,10 @@ public class NativeMultiplayerPanel : MonoBehaviour
     private int _hostSelectedMissionIndex;
     private int _hostMissionPage;
     private int _hostMaxPlayers = 8;
-    private LobbySortColumn _sortColumn = LobbySortColumn.Lobby;
+    // Busiest servers first, like the game's own browser; sorted by name, they were spread over many pages.
+    private LobbySortColumn _sortColumn = LobbySortColumn.Players;
     private HostLobbyVisibility _hostVisibility = HostLobbyVisibility.Public;
-    private bool _sortAscending = true;
+    private bool _sortAscending = false;
     private bool _showPve = true;
     private bool _showPvp = true;
     private bool _showOpenLobbies = true;
