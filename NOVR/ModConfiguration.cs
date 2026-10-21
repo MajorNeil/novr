@@ -21,6 +21,7 @@ public class ModConfiguration
     public readonly ConfigEntry<GazeCursorMode> GazeMenuCursor;
     public readonly ConfigEntry<bool> SelectClicksMenus;
     public readonly ConfigEntry<float> MenuSnapDegrees;
+    public readonly ConfigEntry<float> MenuGazeSteadiness;
     public readonly ConfigEntry<bool> GazeDesignate;
     public readonly ConfigEntry<bool> ShowGazeDot;
 
@@ -94,6 +95,12 @@ public class ModConfiguration
             "Menu Snap Degrees",
             1.5f,
             "When the gaze cursor lands just off a button, it snaps onto the nearest one within this many degrees. 0 turns snapping off.");
+
+        MenuGazeSteadiness = config.Bind(
+            "Eye Tracking",
+            "Menu Gaze Steadiness",
+            0.6f,
+            "How still the gaze menu cursor holds while you look at one spot, from 0 (follows every flicker of the tracker) to 1 (steadiest, slowest to settle on small eye movements). Looking further away always jumps straight there. Doesn't affect designating.");
 
         GazeDesignate = config.Bind(
             "Eye Tracking",

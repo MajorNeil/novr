@@ -66,10 +66,13 @@ public class VrUiCursor: NOVRBehaviour
     private static readonly Color CursorHoverColor = new Color32(155, 255, 175, 255);
     private static readonly Color CursorPressedColor = new Color32(255, 224, 92, 255);
     private const float HybridMouseHoldSeconds = 1.5f;
-    private const float HybridMouseMovePixels = 3f;
+    private const float HybridTakeoverPixels = 20f;
+    private const float HybridTakeoverWindowSeconds = 0.3f;
     private const float MaxSnapDegrees = 5f;
     private const float SnapHysteresis = 1.5f;
+    private const float SnapSwitchMarginDegrees = 0.5f;
     private const float SnapInset = 0.2f;
+    private const int MaxSnapOcclusionChecks = 3;
     private GameObject? _cursor;
     private RectTransform? _cursorRectTransform;
     private Canvas? _cursorCanvas;
@@ -79,10 +82,14 @@ public class VrUiCursor: NOVRBehaviour
     private bool _hasProjectionReferenceOverride;
     private Quaternion _projectionReferenceRotation = Quaternion.identity;
     private bool _gazeDriving;
+    private bool _gazeHeldForClick;
     private float _lastMouseMoveTime = float.NegativeInfinity;
+    private float _mouseTravelStartTime = float.NegativeInfinity;
+    private float _mouseTravel;
     private Vector3 _cursorDirection = Vector3.forward;
     private Selectable? _snapTarget;
     private Selectable[] _selectableBuffer = new Selectable[64];
+    private readonly List<(Selectable Selectable, float OutsideDegrees, Vector3 Direction)> _snapCandidates = new();
     private readonly List<RaycastResult> _raycastResults = new();
     private bool _selectHeld;
     private bool _selectPressedThisFrame;
@@ -228,19 +235,17 @@ public class VrUiCursor: NOVRBehaviour
         if (mouse == null) return;
 
         Vector3 worldDirection = GetPointerDirection(mouse);
-        Vector2 inScreenSpace = ToEventScreenPoint(camera, camera.transform.position + worldDirection * DefaultProjectionDistance);
-        float cursorDistance = GetDistanceUnderCursor(inScreenSpace);
-        if (!_gazeDriving || _cursorOverInteractive)
+        if (!_gazeDriving)
         {
             _snapTarget = null;
         }
-        else if (TrySnapToSelectable(camera, worldDirection, out var snappedDirection))
+        else if (!_gazeHeldForClick)
         {
-            worldDirection = snappedDirection;
-            inScreenSpace = ToEventScreenPoint(camera, camera.transform.position + worldDirection * DefaultProjectionDistance);
-            cursorDistance = GetDistanceUnderCursor(inScreenSpace);
+            worldDirection = AimAtSelectable(camera, worldDirection);
         }
 
+        Vector2 inScreenSpace = ToEventScreenPoint(camera, camera.transform.position + worldDirection * DefaultProjectionDistance);
+        float cursorDistance = GetDistanceUnderCursor(inScreenSpace);
         _cursorDirection = worldDirection;
         Vector3 pos = camera.transform.position + worldDirection * cursorDistance;
         _cursor.transform.position = pos;
@@ -254,38 +259,56 @@ public class VrUiCursor: NOVRBehaviour
         var mode = config.EyeTrackingEnabled.Value ? config.GazeMenuCursor.Value : GazeCursorMode.Mouse;
         var wasGazeDriving = _gazeDriving;
         _gazeDriving = false;
-        if (mode == GazeCursorMode.Mouse || !NOVREyeGaze.TryGetUiDirection(out var gazeDirection))
+        _gazeHeldForClick = false;
+        if (mode == GazeCursorMode.Mouse || !NOVREyeGaze.TryGetMenuDirection(out var gazeDirection))
         {
             return GetMouseDirection(mouse.position.ReadValue());
         }
 
-        if (mode == GazeCursorMode.Hybrid)
+        if (mode == GazeCursorMode.Hybrid && IsMouseInUse(mouse))
         {
-            if (mouse.delta.ReadValue().sqrMagnitude > HybridMouseMovePixels * HybridMouseMovePixels)
+            // Carry on from where the gaze cursor was instead of jumping to wherever the mouse was left.
+            if (wasGazeDriving)
             {
-                _lastMouseMoveTime = Time.unscaledTime;
-                // Carry on from where the gaze cursor was instead of jumping to wherever the mouse was left.
-                if (wasGazeDriving)
-                {
-                    WarpMouseTo(_cursorDirection);
-                    return _cursorDirection;
-                }
+                WarpMouseTo(_cursorDirection);
+                return _cursorDirection;
             }
 
-            if (Time.unscaledTime - _lastMouseMoveTime < HybridMouseHoldSeconds)
-            {
-                return GetMouseDirection(mouse.position.ReadValue());
-            }
+            return GetMouseDirection(mouse.position.ReadValue());
         }
 
         _gazeDriving = true;
         // Held still while clicking, so the eyes moving on before the button is released don't drag a list instead.
         if (wasGazeDriving && (_selectHeld || mouse.leftButton.isPressed))
         {
+            _gazeHeldForClick = true;
             return _cursorDirection;
         }
 
         return gazeDirection;
+    }
+
+    // In Hybrid the mouse takes over once it has really been moved, HybridTakeoverPixels within
+    // HybridTakeoverWindowSeconds (a bumped desk or a drifting sensor doesn't count), and keeps the cursor until it has
+    // been still for a moment.
+    private bool IsMouseInUse(Mouse mouse)
+    {
+        var now = Time.unscaledTime;
+        var motion = mouse.delta.ReadValue().magnitude;
+        if (motion > 0f)
+        {
+            if (now - _mouseTravelStartTime > HybridTakeoverWindowSeconds)
+            {
+                _mouseTravel = 0f;
+                _mouseTravelStartTime = now;
+            }
+
+            _mouseTravel += motion;
+            var inUse = now - _lastMouseMoveTime < HybridMouseHoldSeconds;
+            if (inUse || _mouseTravel >= HybridTakeoverPixels) _lastMouseMoveTime = now;
+        }
+
+        return now - _lastMouseMoveTime < HybridMouseHoldSeconds;
     }
 
     private Vector3 GetMouseDirection(Vector2 mousePosition)
@@ -307,82 +330,153 @@ public class VrUiCursor: NOVRBehaviour
             Mathf.InverseLerp(-MaxPitchDegrees, MaxPitchDegrees, pitch) * ScreenHeight));
     }
 
-    // Eye trackers are good to about a degree, which is a lot on a small button: a gaze that lands just off one is put
-    // on the nearest within Menu Snap Degrees, and kept on it a little further out so it doesn't flicker between two.
-    private bool TrySnapToSelectable(Camera camera, Vector3 gazeDirection, out Vector3 snappedDirection)
+    // Eye trackers are good to about a degree, which is a lot on a small button. The gaze cursor goes onto the button
+    // the gaze is on, or the nearest within Menu Snap Degrees, and then only moves inside it, a little in from its
+    // edges, so it never sits on an edge flickering on and off. It stays on that button until the gaze is clearly
+    // past its edge (by SnapSwitchMarginDegrees more than the next one) or well beyond the snap distance.
+    private Vector3 AimAtSelectable(Camera camera, Vector3 gazeDirection)
     {
-        snappedDirection = gazeDirection;
         var snapDegrees = Mathf.Clamp(ModConfiguration.Instance.MenuSnapDegrees.Value, 0f, MaxSnapDegrees);
+        var origin = camera.transform.position;
+        Selectable? underGaze = null;
+        if (TryGetTopRaycastResult(ToEventScreenPoint(camera, origin + gazeDirection * DefaultProjectionDistance), out var hit))
+        {
+            var selectable = hit.gameObject.GetComponentInParent<Selectable>();
+            if (selectable != null && IsSnappable(selectable))
+            {
+                underGaze = selectable;
+            }
+            else if (IsInteractiveRaycastTarget(hit.gameObject))
+            {
+                // A scrollbar, a drag area or the like: it takes the gaze as it is.
+                _snapTarget = null;
+                return gazeDirection;
+            }
+        }
+
         if (snapDegrees <= 0f)
         {
             _snapTarget = null;
-            return false;
+            return gazeDirection;
         }
 
-        var origin = camera.transform.position;
-        if (_snapTarget != null && IsSnappable(_snapTarget) &&
-            TryGetSnapDirection(_snapTarget, origin, gazeDirection, out var keptDirection, out var keptAngle) &&
-            keptAngle <= snapDegrees * SnapHysteresis && IsTopmostAt(camera, _snapTarget, keptDirection))
+        CollectSnapCandidates(origin, gazeDirection, snapDegrees * SnapHysteresis);
+
+        // A label or icon can stick out of its button's rect; hitting it still clicks the button, right where it is.
+        (Selectable Selectable, float OutsideDegrees, Vector3 Direction)? underGazeCandidate =
+            underGaze == null ? null : FindCandidate(underGaze) ?? (underGaze, 0f, gazeDirection);
+        var current = _snapTarget == underGaze ? underGazeCandidate : FindCandidate(_snapTarget);
+        var keepCurrent = current is { } kept &&
+                          kept.OutsideDegrees <= snapDegrees * SnapHysteresis &&
+                          (_snapTarget == underGaze || IsTopmostAt(camera, kept.Selectable, kept.Direction));
+
+        // The button under the gaze, else the nearest one in reach that a click would actually hit.
+        var next = underGazeCandidate;
+        if (next == null)
         {
-            snappedDirection = keptDirection;
-            return true;
+            var checks = 0;
+            foreach (var candidate in _snapCandidates)
+            {
+                if (candidate.OutsideDegrees > snapDegrees || checks >= MaxSnapOcclusionChecks) break;
+                if (candidate.Selectable == _snapTarget) continue;
+                if (keepCurrent && candidate.OutsideDegrees + SnapSwitchMarginDegrees >= current!.Value.OutsideDegrees) break;
+
+                checks++;
+                if (!IsTopmostAt(camera, candidate.Selectable, candidate.Direction)) continue;
+                next = candidate;
+                break;
+            }
         }
 
-        _snapTarget = null;
+        var switchTo = next is { } other && other.Selectable != _snapTarget &&
+                       (!keepCurrent || other.OutsideDegrees + SnapSwitchMarginDegrees < current!.Value.OutsideDegrees);
+        if (switchTo)
+        {
+            _snapTarget = next!.Value.Selectable;
+            gazeDirection = next.Value.Direction;
+        }
+        else if (keepCurrent)
+        {
+            gazeDirection = current!.Value.Direction;
+        }
+        else
+        {
+            _snapTarget = null;
+        }
+
+        _snapCandidates.Clear();
+        return gazeDirection;
+    }
+
+    // Every snappable button within reach of the gaze, nearest first.
+    private void CollectSnapCandidates(Vector3 origin, Vector3 gazeDirection, float maxDegrees)
+    {
+        _snapCandidates.Clear();
         if (_selectableBuffer.Length < Selectable.allSelectableCount)
         {
             _selectableBuffer = new Selectable[Mathf.NextPowerOfTwo(Selectable.allSelectableCount)];
         }
 
         var count = Selectable.AllSelectablesNoAlloc(_selectableBuffer);
-        var bestAngle = snapDegrees;
         for (var i = 0; i < count; i++)
         {
             var selectable = _selectableBuffer[i];
-            if (!IsSnappable(selectable) ||
-                !TryGetSnapDirection(selectable, origin, gazeDirection, out var direction, out var angle) ||
-                angle > bestAngle ||
-                !IsTopmostAt(camera, selectable, direction))
+            if (IsSnappable(selectable) &&
+                TryGetSnapDirection(selectable, origin, gazeDirection, out var direction, out var outsideDegrees) &&
+                outsideDegrees <= maxDegrees)
             {
-                continue;
+                _snapCandidates.Add((selectable, outsideDegrees, direction));
             }
-
-            _snapTarget = selectable;
-            bestAngle = angle;
-            snappedDirection = direction;
         }
 
         System.Array.Clear(_selectableBuffer, 0, count);
-        return _snapTarget != null;
+        _snapCandidates.Sort((a, b) => a.OutsideDegrees.CompareTo(b.OutsideDegrees));
+    }
+
+    private (Selectable Selectable, float OutsideDegrees, Vector3 Direction)? FindCandidate(Selectable? selectable)
+    {
+        if (selectable == null) return null;
+        foreach (var candidate in _snapCandidates)
+        {
+            if (candidate.Selectable == selectable) return candidate;
+        }
+
+        return null;
     }
 
     private static bool IsSnappable(Selectable selectable) =>
         selectable != null && selectable.isActiveAndEnabled && selectable.IsInteractable() &&
         selectable is not Scrollbar && selectable.gameObject.layer == (int)LayerHelper.GetVrUiLayer();
 
-    // Toward the point of the selectable's rect nearest the gaze, kept a little inside its edges so a click lands on it.
-    private static bool TryGetSnapDirection(Selectable selectable, Vector3 origin, Vector3 gazeDirection, out Vector3 direction, out float angle)
+    // How far outside the selectable's rect the gaze is (0 when on it), and the direction to put the cursor: the point
+    // of the rect nearest the gaze, kept a little inside its edges so a click lands on it.
+    private static bool TryGetSnapDirection(Selectable selectable, Vector3 origin, Vector3 gazeDirection, out Vector3 direction, out float outsideDegrees)
     {
         direction = gazeDirection;
-        angle = float.MaxValue;
+        outsideDegrees = float.MaxValue;
         if (selectable.transform is not RectTransform rectTransform) return false;
 
         var rect = rectTransform.rect;
         if (rect.width <= 0f || rect.height <= 0f) return false;
 
         var plane = new Plane(rectTransform.forward, rectTransform.position);
-        var localPoint = plane.Raycast(new Ray(origin, gazeDirection), out var hitDistance)
-            ? (Vector2)rectTransform.InverseTransformPoint(origin + gazeDirection * hitDistance)
-            : rect.center;
+        if (!plane.Raycast(new Ray(origin, gazeDirection), out var hitDistance)) return false;
+
+        var gazePoint = (Vector2)rectTransform.InverseTransformPoint(origin + gazeDirection * hitDistance);
+        var edgePoint = new Vector2(
+            Mathf.Clamp(gazePoint.x, rect.xMin, rect.xMax),
+            Mathf.Clamp(gazePoint.y, rect.yMin, rect.yMax));
         var inset = rect.size * SnapInset;
-        localPoint.x = Mathf.Clamp(localPoint.x, rect.xMin + inset.x, rect.xMax - inset.x);
-        localPoint.y = Mathf.Clamp(localPoint.y, rect.yMin + inset.y, rect.yMax - inset.y);
+        var cursorPoint = new Vector2(
+            Mathf.Clamp(gazePoint.x, rect.xMin + inset.x, rect.xMax - inset.x),
+            Mathf.Clamp(gazePoint.y, rect.yMin + inset.y, rect.yMax - inset.y));
 
-        var toPoint = rectTransform.TransformPoint(localPoint) - origin;
-        if (toPoint.sqrMagnitude <= Mathf.Epsilon) return false;
+        var toEdge = rectTransform.TransformPoint(edgePoint) - origin;
+        var toCursor = rectTransform.TransformPoint(cursorPoint) - origin;
+        if (toEdge.sqrMagnitude <= Mathf.Epsilon || toCursor.sqrMagnitude <= Mathf.Epsilon) return false;
 
-        direction = toPoint.normalized;
-        angle = Vector3.Angle(gazeDirection, direction);
+        outsideDegrees = gazePoint == edgePoint ? 0f : Vector3.Angle(gazeDirection, toEdge);
+        direction = toCursor.normalized;
         return true;
     }
 
