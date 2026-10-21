@@ -101,6 +101,10 @@ public class NativeMultiplayerPanel : MonoBehaviour
     private NativeLobbyEntry? _pendingPasswordLobby;
     private float _nextSourceRefreshTime;
     private bool _wasVisible;
+    private const int ServerListLogLimit = 10;
+    private string? _lastServerListSummary;
+    private int _serverListLogCount;
+    private bool _loggedLobbyListFields;
 
     public void Initialize(NativeGameActionAdapter actions, RectTransform root)
     {
@@ -352,6 +356,7 @@ public class NativeMultiplayerPanel : MonoBehaviour
         }
 
         var lobbyItems = lobbyList.GetComponentsInChildren<LobbyListItem>(true);
+        LogServerListSummary(lobbyList, lobbyItems);
         for (var index = 0; index < lobbyItems.Length; index++)
         {
             var item = lobbyItems[index];
@@ -1131,6 +1136,71 @@ public class NativeMultiplayerPanel : MonoBehaviour
     private int GetLastPage()
     {
         return Mathf.Max(0, Mathf.CeilToInt(_visibleLobbies.Count / (float)PageSize) - 1);
+    }
+
+    // Temporary diagnostics for vanilla servers missing from this browser: what the game hands over, what it marks as
+    // hidden, and the settings of its own (hidden) server browser.
+    private void LogServerListSummary(LobbyList lobbyList, LobbyListItem[] lobbyItems)
+    {
+        if (_serverListLogCount >= ServerListLogLimit) return;
+
+        int vanilla = 0, vanillaShown = 0, modded = 0, moddedShown = 0;
+        foreach (var item in lobbyItems)
+        {
+            if (item == null || item.lobby == null) continue;
+            var shown = IsLobbyItemShown(item);
+            if (item.lobby.ModdedServer)
+            {
+                modded++;
+                if (shown) moddedShown++;
+            }
+            else
+            {
+                vanilla++;
+                if (shown) vanillaShown++;
+            }
+        }
+
+        var summary = $"game reports this client as modded={NetworkManagerNuclearOption.ModdedServer?.ToString() ?? "unknown"}; " +
+                      $"{vanilla + modded} lobbies from the game: {vanilla} vanilla ({vanillaShown} shown), {modded} modded ({moddedShown} shown)";
+        if (summary == _lastServerListSummary) return;
+
+        _lastServerListSummary = summary;
+        _serverListLogCount++;
+        NOVRPlugin.Log.LogInfo($"[NOVR] Server list: {summary}");
+        if (_loggedLobbyListFields) return;
+
+        _loggedLobbyListFields = true;
+        NOVRPlugin.Log.LogInfo($"[NOVR] Game server browser settings: {DescribeFields(lobbyList)}");
+    }
+
+    private static string DescribeFields(object target)
+    {
+        var parts = new List<string>();
+        foreach (var field in target.GetType().GetFields(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+        {
+            object? value;
+            try
+            {
+                value = field.GetValue(field.IsStatic ? null : target);
+            }
+            catch (Exception)
+            {
+                continue;
+            }
+
+            var text = value switch
+            {
+                null => "null",
+                bool or int or float or string or Enum => value.ToString(),
+                Toggle toggle => toggle != null ? $"Toggle(isOn={toggle.isOn})" : "null",
+                UnityEngine.Object unityObject => unityObject != null ? unityObject.GetType().Name : "null",
+                _ => value.GetType().Name
+            };
+            parts.Add($"{(field.IsStatic ? "static " : "")}{field.Name}={text}");
+        }
+
+        return string.Join(", ", parts);
     }
 
     private static bool IsLobbyItemShown(LobbyListItem item)
