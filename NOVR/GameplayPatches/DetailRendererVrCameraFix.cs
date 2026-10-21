@@ -14,8 +14,11 @@ internal static class DetailRendererVrCameraFix
 {
     private static readonly Type? DetailRendererType = AccessTools.TypeByName("NuclearOption.Effects.DetailRenderer");
     private static readonly FieldInfo? CameraField = DetailRendererType != null ? AccessTools.Field(DetailRendererType, "camera") : null;
+    // The singleton is a field in current versions; plain reflection for the fallback, which AccessTools would warn about.
     private static readonly FieldInfo? InstanceField = DetailRendererType != null ? AccessTools.Field(DetailRendererType, "i") : null;
-    private static readonly PropertyInfo? InstanceProperty = DetailRendererType != null ? AccessTools.Property(DetailRendererType, "i") : null;
+    private static readonly PropertyInfo? InstanceProperty = DetailRendererType != null && InstanceField == null
+        ? DetailRendererType.GetProperty("i", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+        : null;
 
     private static bool _loggedBinding;
     private static bool _loggedFailure;
