@@ -105,6 +105,10 @@ public class NativeMultiplayerPanel : MonoBehaviour
     private string? _lastServerListSummary;
     private int _serverListLogCount;
     private bool _loggedLobbyListFields;
+    private const float ServerTableLogDelaySeconds = 8f;
+    private const int ServerTableLogLimit = 2;
+    private float _serverTableLogTime = -1f;
+    private int _serverTableLogCount;
 
     public void Initialize(NativeGameActionAdapter actions, RectTransform root)
     {
@@ -675,6 +679,7 @@ public class NativeMultiplayerPanel : MonoBehaviour
         SetStatus("Refreshing lobby list.");
         _actions?.TryRefreshMultiplayerLobbies();
         _nextSourceRefreshTime = 0f;
+        if (_serverTableLogCount < ServerTableLogLimit) _serverTableLogTime = -1f;
     }
 
     private void CreateLobbyClicked()
@@ -1161,6 +1166,18 @@ public class NativeMultiplayerPanel : MonoBehaviour
             }
         }
 
+        // A full listing once the list has had time to fill, after opening and after a REFRESH.
+        if (_serverTableLogTime < 0f && vanilla + modded > 0 && _serverTableLogCount < ServerTableLogLimit)
+        {
+            _serverTableLogTime = Time.unscaledTime + ServerTableLogDelaySeconds;
+        }
+        else if (_serverTableLogTime >= 0f && Time.unscaledTime >= _serverTableLogTime)
+        {
+            _serverTableLogTime = float.MaxValue;
+            _serverTableLogCount++;
+            LogServerTable(lobbyList, lobbyItems);
+        }
+
         var summary = $"game reports this client as modded={NetworkManagerNuclearOption.ModdedServer?.ToString() ?? "unknown"}; " +
                       $"{vanilla + modded} lobbies from the game: {vanilla} vanilla ({vanillaShown} shown), {modded} modded ({moddedShown} shown)";
         if (summary == _lastServerListSummary) return;
@@ -1172,6 +1189,30 @@ public class NativeMultiplayerPanel : MonoBehaviour
 
         _loggedLobbyListFields = true;
         NOVRPlugin.Log.LogInfo($"[NOVR] Game server browser settings: {DescribeFields(lobbyList)}");
+    }
+
+    private void LogServerTable(LobbyList lobbyList, LobbyListItem[] lobbyItems)
+    {
+        NOVRPlugin.Log.LogInfo($"[NOVR] Game server query: activeFilter {{{DescribeNamedField(lobbyList, "activeFilter")}}}, " +
+                               $"missionType {{{DescribeNamedField(lobbyList, "missionTypeToggleGroup")}}}, " +
+                               $"serverType {{{DescribeNamedField(lobbyList, "serverTypeToggleGroup")}}}, " +
+                               $"distance {{{DescribeNamedField(lobbyList, "distanceFilterToggleGroup")}}}");
+        foreach (var item in lobbyItems)
+        {
+            if (item == null || item.lobby == null) continue;
+            var players = item.lobby.GetPlayerCounts(out var current, out var max) ? $"{current}/{max}" : $"{item.PlayerCount}";
+            NOVRPlugin.Log.LogInfo(
+                $"[NOVR]   server '{item.LobbyName}': type={item.lobby.MissionPvpType}({(int)item.lobby.MissionPvpType}), players={players}, " +
+                $"modded={item.lobby.ModdedServer}, dedicated={item.lobby.DedicatedServer || item.IsServer}, ping={item.Ping?.ToString() ?? "-"}, " +
+                $"shown={IsLobbyItemShown(item)}, full={item.IsFull}, mission='{item.MissionName}'");
+        }
+    }
+
+    private static string DescribeNamedField(object target, string fieldName)
+    {
+        var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        var value = field?.GetValue(target);
+        return value == null ? "missing" : DescribeFields(value);
     }
 
     private static string DescribeFields(object target)
@@ -1194,6 +1235,7 @@ public class NativeMultiplayerPanel : MonoBehaviour
                 null => "null",
                 bool or int or float or string or Enum => value.ToString(),
                 Toggle toggle => toggle != null ? $"Toggle(isOn={toggle.isOn})" : "null",
+                System.Collections.IEnumerable items and not UnityEngine.Object => DescribeItems(items),
                 UnityEngine.Object unityObject => unityObject != null ? unityObject.GetType().Name : "null",
                 _ => value.GetType().Name
             };
@@ -1201,6 +1243,24 @@ public class NativeMultiplayerPanel : MonoBehaviour
         }
 
         return string.Join(", ", parts);
+    }
+
+    private static string DescribeItems(System.Collections.IEnumerable items)
+    {
+        var parts = new List<string>();
+        foreach (var item in items)
+        {
+            if (parts.Count >= 10) break;
+            parts.Add(item switch
+            {
+                null => "null",
+                Toggle toggle => toggle != null ? $"{toggle.name}:{(toggle.isOn ? "on" : "off")}" : "null",
+                UnityEngine.Object unityObject => unityObject != null ? $"{unityObject.name}" : "null",
+                _ => item.ToString()
+            });
+        }
+
+        return $"[{string.Join(", ", parts)}]";
     }
 
     private static bool IsLobbyItemShown(LobbyListItem item)
