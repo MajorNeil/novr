@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Reflection;
+using NOVR.EyeTracking;
 using NOVR.VrCamera;
 using NOVR.VrTogglers;
 using NOVR.VrUi;
@@ -60,7 +61,7 @@ public class Core : MonoBehaviour
         _vrUi = NOVRBehaviour.Create<NOUIManager>(transform);
         
         _vrTogglerManager = new VrTogglerManager();
-        
+        if (ModConfiguration.Instance.EyeTrackingEnabled.Value) NOVRBehaviour.Create<NOVREyeGaze>(transform);
     }
 
 

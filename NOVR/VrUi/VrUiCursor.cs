@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using NOVR.EyeTracking;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
@@ -17,6 +18,8 @@ public class VrUiCursor: NOVRBehaviour
     // Set while NOVR's native menu is showing and owns the cursor's forward direction.
     public bool HasProjectionReferenceOverride => _hasProjectionReferenceOverride;
     public Vector3 CursorPosition => _cursor != null ? _cursor.transform.position : Vector3.zero;
+    // Set while the game's Select button clicks the menus (see UpdateSelectButton), so it doesn't also designate.
+    public bool SelectButtonClicksMenus { get; private set; }
 
     protected override void Awake()
     {
@@ -62,6 +65,11 @@ public class VrUiCursor: NOVRBehaviour
     private static readonly Color CursorNormalColor = new Color32(100, 200, 100, 255);
     private static readonly Color CursorHoverColor = new Color32(155, 255, 175, 255);
     private static readonly Color CursorPressedColor = new Color32(255, 224, 92, 255);
+    private const float HybridMouseHoldSeconds = 1.5f;
+    private const float HybridMouseMovePixels = 3f;
+    private const float MaxSnapDegrees = 5f;
+    private const float SnapHysteresis = 1.5f;
+    private const float SnapInset = 0.2f;
     private GameObject? _cursor;
     private RectTransform? _cursorRectTransform;
     private Canvas? _cursorCanvas;
@@ -70,6 +78,14 @@ public class VrUiCursor: NOVRBehaviour
     private float _lastCursorClickTime = -100f;
     private bool _hasProjectionReferenceOverride;
     private Quaternion _projectionReferenceRotation = Quaternion.identity;
+    private bool _gazeDriving;
+    private float _lastMouseMoveTime = float.NegativeInfinity;
+    private Vector3 _cursorDirection = Vector3.forward;
+    private Selectable? _snapTarget;
+    private Selectable[] _selectableBuffer = new Selectable[64];
+    private readonly List<RaycastResult> _raycastResults = new();
+    private bool _selectHeld;
+    private bool _selectPressedThisFrame;
 
     private static readonly Vector2 OffScreenPoint = new(-1f, -1f);
     private BaseInputModule? _lastSeenUiModule;
@@ -126,6 +142,7 @@ public class VrUiCursor: NOVRBehaviour
 
     private void Update()
     {
+        SelectButtonClicksMenus = false;
         if (!Application.isFocused)
         {
             if (_cursor != null && _cursor.activeSelf)
@@ -165,12 +182,13 @@ public class VrUiCursor: NOVRBehaviour
         var realMouse = _realMouse;
         if (realMouse == null || _virtualMouse == null) return;
 
+        UpdateSelectButton();
         UpdateCursorAnimation(realMouse);
 
         var screenPoint = GetScreenPoint();
 
         ushort buttons = 0;
-        if (realMouse.leftButton.isPressed) buttons |= 1;
+        if (realMouse.leftButton.isPressed || _selectHeld) buttons |= 1;
         if (realMouse.rightButton.isPressed) buttons |= 2;
         if (realMouse.middleButton.isPressed) buttons |= 4;
 
@@ -209,18 +227,194 @@ public class VrUiCursor: NOVRBehaviour
         var mouse = _realMouse;
         if (mouse == null) return;
 
-        var mousePos = mouse.position.ReadValue();
-        float cursorPitch = ProjectPitchAngle(mousePos.y);
-        float cursorYaw = ProjectYawAngle(mousePos.x);        
-        
-        Vector3 localDirection = Quaternion.Euler(-cursorPitch, cursorYaw, 0f) * Vector3.forward;
-        Quaternion referenceRotation = GetProjectionReferenceRotation();
-        Vector3 worldDirection = referenceRotation * localDirection;
+        Vector3 worldDirection = GetPointerDirection(mouse);
         Vector2 inScreenSpace = ToEventScreenPoint(camera, camera.transform.position + worldDirection * DefaultProjectionDistance);
         float cursorDistance = GetDistanceUnderCursor(inScreenSpace);
+        if (!_gazeDriving || _cursorOverInteractive)
+        {
+            _snapTarget = null;
+        }
+        else if (TrySnapToSelectable(camera, worldDirection, out var snappedDirection))
+        {
+            worldDirection = snappedDirection;
+            inScreenSpace = ToEventScreenPoint(camera, camera.transform.position + worldDirection * DefaultProjectionDistance);
+            cursorDistance = GetDistanceUnderCursor(inScreenSpace);
+        }
+
+        _cursorDirection = worldDirection;
         Vector3 pos = camera.transform.position + worldDirection * cursorDistance;
         _cursor.transform.position = pos;
         _cursor.transform.rotation = Quaternion.LookRotation(worldDirection, camera.transform.up);
+    }
+
+    // The mouse maps across the projection reference like a flat screen; eye gaze points straight at what is looked at.
+    private Vector3 GetPointerDirection(Mouse mouse)
+    {
+        var config = ModConfiguration.Instance;
+        var mode = config.EyeTrackingEnabled.Value ? config.GazeMenuCursor.Value : GazeCursorMode.Mouse;
+        var wasGazeDriving = _gazeDriving;
+        _gazeDriving = false;
+        if (mode == GazeCursorMode.Mouse || !NOVREyeGaze.TryGetUiDirection(out var gazeDirection))
+        {
+            return GetMouseDirection(mouse.position.ReadValue());
+        }
+
+        if (mode == GazeCursorMode.Hybrid)
+        {
+            if (mouse.delta.ReadValue().sqrMagnitude > HybridMouseMovePixels * HybridMouseMovePixels)
+            {
+                _lastMouseMoveTime = Time.unscaledTime;
+                // Carry on from where the gaze cursor was instead of jumping to wherever the mouse was left.
+                if (wasGazeDriving)
+                {
+                    WarpMouseTo(_cursorDirection);
+                    return _cursorDirection;
+                }
+            }
+
+            if (Time.unscaledTime - _lastMouseMoveTime < HybridMouseHoldSeconds)
+            {
+                return GetMouseDirection(mouse.position.ReadValue());
+            }
+        }
+
+        _gazeDriving = true;
+        // Held still while clicking, so the eyes moving on before the button is released don't drag a list instead.
+        if (wasGazeDriving && (_selectHeld || mouse.leftButton.isPressed))
+        {
+            return _cursorDirection;
+        }
+
+        return gazeDirection;
+    }
+
+    private Vector3 GetMouseDirection(Vector2 mousePosition)
+    {
+        float cursorPitch = ProjectPitchAngle(mousePosition.y);
+        float cursorYaw = ProjectYawAngle(mousePosition.x);
+        Vector3 localDirection = Quaternion.Euler(-cursorPitch, cursorYaw, 0f) * Vector3.forward;
+        return GetProjectionReferenceRotation() * localDirection;
+    }
+
+    // The inverse of GetMouseDirection, held to the area the mouse covers.
+    private void WarpMouseTo(Vector3 worldDirection)
+    {
+        var localDirection = Quaternion.Inverse(GetProjectionReferenceRotation()) * worldDirection;
+        var yaw = Mathf.Atan2(localDirection.x, localDirection.z) * Mathf.Rad2Deg;
+        var pitch = Mathf.Asin(Mathf.Clamp(localDirection.y, -1f, 1f)) * Mathf.Rad2Deg;
+        _realMouse?.WarpCursorPosition(new Vector2(
+            Mathf.InverseLerp(-MaxYawDegrees, MaxYawDegrees, yaw) * ScreenWidth,
+            Mathf.InverseLerp(-MaxPitchDegrees, MaxPitchDegrees, pitch) * ScreenHeight));
+    }
+
+    // Eye trackers are good to about a degree, which is a lot on a small button: a gaze that lands just off one is put
+    // on the nearest within Menu Snap Degrees, and kept on it a little further out so it doesn't flicker between two.
+    private bool TrySnapToSelectable(Camera camera, Vector3 gazeDirection, out Vector3 snappedDirection)
+    {
+        snappedDirection = gazeDirection;
+        var snapDegrees = Mathf.Clamp(ModConfiguration.Instance.MenuSnapDegrees.Value, 0f, MaxSnapDegrees);
+        if (snapDegrees <= 0f)
+        {
+            _snapTarget = null;
+            return false;
+        }
+
+        var origin = camera.transform.position;
+        if (_snapTarget != null && IsSnappable(_snapTarget) &&
+            TryGetSnapDirection(_snapTarget, origin, gazeDirection, out var keptDirection, out var keptAngle) &&
+            keptAngle <= snapDegrees * SnapHysteresis && IsTopmostAt(camera, _snapTarget, keptDirection))
+        {
+            snappedDirection = keptDirection;
+            return true;
+        }
+
+        _snapTarget = null;
+        if (_selectableBuffer.Length < Selectable.allSelectableCount)
+        {
+            _selectableBuffer = new Selectable[Mathf.NextPowerOfTwo(Selectable.allSelectableCount)];
+        }
+
+        var count = Selectable.AllSelectablesNoAlloc(_selectableBuffer);
+        var bestAngle = snapDegrees;
+        for (var i = 0; i < count; i++)
+        {
+            var selectable = _selectableBuffer[i];
+            if (!IsSnappable(selectable) ||
+                !TryGetSnapDirection(selectable, origin, gazeDirection, out var direction, out var angle) ||
+                angle > bestAngle ||
+                !IsTopmostAt(camera, selectable, direction))
+            {
+                continue;
+            }
+
+            _snapTarget = selectable;
+            bestAngle = angle;
+            snappedDirection = direction;
+        }
+
+        System.Array.Clear(_selectableBuffer, 0, count);
+        return _snapTarget != null;
+    }
+
+    private static bool IsSnappable(Selectable selectable) =>
+        selectable != null && selectable.isActiveAndEnabled && selectable.IsInteractable() &&
+        selectable is not Scrollbar && selectable.gameObject.layer == (int)LayerHelper.GetVrUiLayer();
+
+    // Toward the point of the selectable's rect nearest the gaze, kept a little inside its edges so a click lands on it.
+    private static bool TryGetSnapDirection(Selectable selectable, Vector3 origin, Vector3 gazeDirection, out Vector3 direction, out float angle)
+    {
+        direction = gazeDirection;
+        angle = float.MaxValue;
+        if (selectable.transform is not RectTransform rectTransform) return false;
+
+        var rect = rectTransform.rect;
+        if (rect.width <= 0f || rect.height <= 0f) return false;
+
+        var plane = new Plane(rectTransform.forward, rectTransform.position);
+        var localPoint = plane.Raycast(new Ray(origin, gazeDirection), out var hitDistance)
+            ? (Vector2)rectTransform.InverseTransformPoint(origin + gazeDirection * hitDistance)
+            : rect.center;
+        var inset = rect.size * SnapInset;
+        localPoint.x = Mathf.Clamp(localPoint.x, rect.xMin + inset.x, rect.xMax - inset.x);
+        localPoint.y = Mathf.Clamp(localPoint.y, rect.yMin + inset.y, rect.yMax - inset.y);
+
+        var toPoint = rectTransform.TransformPoint(localPoint) - origin;
+        if (toPoint.sqrMagnitude <= Mathf.Epsilon) return false;
+
+        direction = toPoint.normalized;
+        angle = Vector3.Angle(gazeDirection, direction);
+        return true;
+    }
+
+    // Behind another menu, masked out of a scroll view or in a group that blocks clicks: only snap to what a click
+    // there would actually hit.
+    private bool IsTopmostAt(Camera camera, Selectable selectable, Vector3 direction)
+    {
+        var screenPoint = ToEventScreenPoint(camera, camera.transform.position + direction * DefaultProjectionDistance);
+        return TryGetTopRaycastResult(screenPoint, out var result) &&
+               result.gameObject.GetComponentInParent<Selectable>() == selectable;
+    }
+
+    // With eye tracking, the game's Select (designate) button clicks the menus too, so they work from the stick.
+    private void UpdateSelectButton()
+    {
+        var config = ModConfiguration.Instance;
+        SelectButtonClicksMenus = config.EyeTrackingEnabled.Value && config.SelectClicksMenus.Value && !GameUsesSelectHere();
+        var held = SelectButtonClicksMenus && IsSelectButtonHeld();
+        _selectPressedThisFrame = held && !_selectHeld;
+        _selectHeld = held;
+    }
+
+    // The map picks units with Select and dialogue boxes answer to it themselves.
+    private static bool GameUsesSelectHere() =>
+        global::DynamicMap.mapMaximized ||
+        global::CursorManager.GetFlag(global::CursorFlags.Map) ||
+        global::CursorManager.GetFlag(global::CursorFlags.Dialogue);
+
+    private static bool IsSelectButtonHeld()
+    {
+        var player = global::GameManager.playerInput;
+        return Rewired.ReInput.isReady && player != null && player.GetButton("Select");
     }
 
     private Quaternion GetProjectionReferenceRotation()
@@ -297,6 +491,25 @@ public class VrUiCursor: NOVRBehaviour
         distance = default;
         overInteractive = false;
 
+        if (!TryGetTopRaycastResult(screenPos, out var result))
+        {
+            return false;
+        }
+
+        var camera = UiCamera;
+        Vector3 cameraPos = camera != null ? camera.transform.position : Vector3.zero;
+
+        overInteractive = IsInteractiveRaycastTarget(result.gameObject);
+        distance = result.worldPosition == Vector3.zero
+            ? result.distance
+            : Vector3.Distance(cameraPos, result.worldPosition);
+
+        return distance > 0f;
+    }
+
+    private bool TryGetTopRaycastResult(Vector2 screenPos, out RaycastResult topResult)
+    {
+        topResult = default;
         if (EventSystem.current == null)
         {
             return false;
@@ -307,13 +520,10 @@ public class VrUiCursor: NOVRBehaviour
             position = screenPos
         };
 
-        var results = new List<RaycastResult>();
-        EventSystem.current.RaycastAll(pointerEventData, results);
+        _raycastResults.Clear();
+        EventSystem.current.RaycastAll(pointerEventData, _raycastResults);
 
-        var camera = UiCamera;
-        Vector3 cameraPos = camera != null ? camera.transform.position : Vector3.zero;
-
-        foreach (var result in results)
+        foreach (var result in _raycastResults)
         {
             if (result.gameObject == _cursor || 
                 result.distance < 0f ||
@@ -322,12 +532,8 @@ public class VrUiCursor: NOVRBehaviour
                 continue;
             }
 
-            overInteractive = IsInteractiveRaycastTarget(result.gameObject);
-            distance = result.worldPosition == Vector3.zero
-                ? result.distance
-                : Vector3.Distance(cameraPos, result.worldPosition);
-
-            return distance > 0f;
+            topResult = result;
+            return true;
         }
 
         return false;
@@ -351,12 +557,12 @@ public class VrUiCursor: NOVRBehaviour
     {
         if (_cursor == null || _cursorImage == null) return;
 
-        if (realMouse.leftButton.wasPressedThisFrame)
+        if (realMouse.leftButton.wasPressedThisFrame || _selectPressedThisFrame)
         {
             _lastCursorClickTime = Time.unscaledTime;
         }
 
-        var isPressed = realMouse.leftButton.isPressed;
+        var isPressed = realMouse.leftButton.isPressed || _selectHeld;
         var idlePulse = Mathf.Sin(Time.unscaledTime * CursorIdlePulseSpeed) * CursorIdlePulseScale;
         var clickProgress = Mathf.Clamp01((Time.unscaledTime - _lastCursorClickTime) / CursorClickPulseDuration);
         var clickPulse = clickProgress < 1f
