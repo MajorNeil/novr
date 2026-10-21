@@ -10,7 +10,6 @@ public class ModConfiguration
     
 
     public readonly ConfigFile Config;
-    public readonly ConfigEntry<float> TargetDesignatorOvershoot;
     public readonly ConfigEntry<bool> EnableNativeMenuUi;
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
@@ -24,12 +23,6 @@ public class ModConfiguration
         Instance = this;
 
         Config = config;
-        TargetDesignatorOvershoot = config.Bind(
-            "General",
-            "Target Designator Overshoot",
-            1.2f,
-            "How much the target designator should multiply rotation to make for easier high off boresight target designation. Set to 1.0 to disable");
-
         EnableNativeMenuUi = config.Bind(
             "Experimental",
             "Enable Native Menu UI",
