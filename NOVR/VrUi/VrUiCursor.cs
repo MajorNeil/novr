@@ -71,8 +71,11 @@ public class VrUiCursor: NOVRBehaviour
     private const float MaxSnapDegrees = 5f;
     private const float SnapHysteresis = 1.5f;
     private const float SnapSwitchMarginDegrees = 0.5f;
-    private const float SnapInset = 0.2f;
+    private const float SnapInsetDegrees = 0.4f;
+    private const float SnapBackdropDegrees = 15f;
     private const int MaxSnapOcclusionChecks = 3;
+    private const float SnapCanvasCacheSeconds = 2f;
+    private const float AirbaseIconSearchSeconds = 0.5f;
     private GameObject? _cursor;
     private RectTransform? _cursorRectTransform;
     private Canvas? _cursorCanvas;
@@ -87,9 +90,13 @@ public class VrUiCursor: NOVRBehaviour
     private float _mouseTravelStartTime = float.NegativeInfinity;
     private float _mouseTravel;
     private Vector3 _cursorDirection = Vector3.forward;
-    private Selectable? _snapTarget;
+    private Component? _snapTarget;
     private Selectable[] _selectableBuffer = new Selectable[64];
-    private readonly List<(Selectable Selectable, float OutsideDegrees, Vector3 Direction)> _snapCandidates = new();
+    private readonly List<(Component Target, float OutsideDegrees, Vector3 Direction)> _snapCandidates = new();
+    private readonly Dictionary<int, Canvas?> _snapCanvasCache = new();
+    private float _snapCanvasCacheClearTime;
+    private global::AirbaseMapIcon[] _airbaseIcons = System.Array.Empty<global::AirbaseMapIcon>();
+    private float _nextAirbaseIconSearchTime;
     private readonly List<RaycastResult> _raycastResults = new();
     private bool _selectHeld;
     private bool _selectPressedThisFrame;
@@ -241,7 +248,7 @@ public class VrUiCursor: NOVRBehaviour
         }
         else if (!_gazeHeldForClick)
         {
-            worldDirection = AimAtSelectable(camera, worldDirection);
+            worldDirection = AimAtSnapTarget(camera, worldDirection);
         }
 
         Vector2 inScreenSpace = ToEventScreenPoint(camera, camera.transform.position + worldDirection * DefaultProjectionDistance);
@@ -260,7 +267,7 @@ public class VrUiCursor: NOVRBehaviour
         var wasGazeDriving = _gazeDriving;
         _gazeDriving = false;
         _gazeHeldForClick = false;
-        if (mode == GazeCursorMode.Mouse || !NOVREyeGaze.TryGetMenuDirection(out var gazeDirection))
+        if (mode == GazeCursorMode.Mouse || !NOVREyeGaze.TryGetSteadyUiDirection(out var gazeDirection))
         {
             return GetMouseDirection(mouse.position.ReadValue());
         }
@@ -334,21 +341,23 @@ public class VrUiCursor: NOVRBehaviour
     // the gaze is on, or the nearest within Menu Snap Degrees, and then only moves inside it, a little in from its
     // edges, so it never sits on an edge flickering on and off. It stays on that button until the gaze is clearly
     // past its edge (by SnapSwitchMarginDegrees more than the next one) or well beyond the snap distance.
-    private Vector3 AimAtSelectable(Camera camera, Vector3 gazeDirection)
+    // Snaps to buttons, lists, dropdowns, sliders and the like (Selectables), and to airbases on the map when picking
+    // where to spawn.
+    private Vector3 AimAtSnapTarget(Camera camera, Vector3 gazeDirection)
     {
         var snapDegrees = Mathf.Clamp(ModConfiguration.Instance.MenuSnapDegrees.Value, 0f, MaxSnapDegrees);
         var origin = camera.transform.position;
-        Selectable? underGaze = null;
-        if (TryGetTopRaycastResult(ToEventScreenPoint(camera, origin + gazeDirection * DefaultProjectionDistance), out var hit))
+        Component? underGaze = null;
+        if (TryGetTopRaycastResult(ToEventScreenPoint(camera, origin + gazeDirection * DefaultProjectionDistance), out var hit, includeMapIcons: true))
         {
-            var selectable = hit.gameObject.GetComponentInParent<Selectable>();
-            if (selectable != null && IsSnappable(selectable))
+            var target = GetClickTarget(hit.gameObject);
+            if (target != null && IsSnappable(target))
             {
-                underGaze = selectable;
+                if (!IsBackdrop(target, origin)) underGaze = target;
             }
             else if (IsInteractiveRaycastTarget(hit.gameObject))
             {
-                // A scrollbar, a drag area or the like: it takes the gaze as it is.
+                // A scrollbar, a unit on the map or the like: it takes the gaze as it is.
                 _snapTarget = null;
                 return gazeDirection;
             }
@@ -363,14 +372,14 @@ public class VrUiCursor: NOVRBehaviour
         CollectSnapCandidates(origin, gazeDirection, snapDegrees * SnapHysteresis);
 
         // A label or icon can stick out of its button's rect; hitting it still clicks the button, right where it is.
-        (Selectable Selectable, float OutsideDegrees, Vector3 Direction)? underGazeCandidate =
+        (Component Target, float OutsideDegrees, Vector3 Direction)? underGazeCandidate =
             underGaze == null ? null : FindCandidate(underGaze) ?? (underGaze, 0f, gazeDirection);
         var current = _snapTarget == underGaze ? underGazeCandidate : FindCandidate(_snapTarget);
         var keepCurrent = current is { } kept &&
                           kept.OutsideDegrees <= snapDegrees * SnapHysteresis &&
-                          (_snapTarget == underGaze || IsTopmostAt(camera, kept.Selectable, kept.Direction));
+                          (_snapTarget == underGaze || IsTopmostAt(camera, kept.Target, kept.Direction));
 
-        // The button under the gaze, else the nearest one in reach that a click would actually hit.
+        // The target under the gaze, else the nearest one in reach that a click would actually hit.
         var next = underGazeCandidate;
         if (next == null)
         {
@@ -378,21 +387,21 @@ public class VrUiCursor: NOVRBehaviour
             foreach (var candidate in _snapCandidates)
             {
                 if (candidate.OutsideDegrees > snapDegrees || checks >= MaxSnapOcclusionChecks) break;
-                if (candidate.Selectable == _snapTarget) continue;
+                if (candidate.Target == _snapTarget) continue;
                 if (keepCurrent && candidate.OutsideDegrees + SnapSwitchMarginDegrees >= current!.Value.OutsideDegrees) break;
 
                 checks++;
-                if (!IsTopmostAt(camera, candidate.Selectable, candidate.Direction)) continue;
+                if (!IsTopmostAt(camera, candidate.Target, candidate.Direction)) continue;
                 next = candidate;
                 break;
             }
         }
 
-        var switchTo = next is { } other && other.Selectable != _snapTarget &&
+        var switchTo = next is { } other && other.Target != _snapTarget &&
                        (!keepCurrent || other.OutsideDegrees + SnapSwitchMarginDegrees < current!.Value.OutsideDegrees);
         if (switchTo)
         {
-            _snapTarget = next!.Value.Selectable;
+            _snapTarget = next!.Value.Target;
             gazeDirection = next.Value.Direction;
         }
         else if (keepCurrent)
@@ -408,10 +417,16 @@ public class VrUiCursor: NOVRBehaviour
         return gazeDirection;
     }
 
-    // Every snappable button within reach of the gaze, nearest first.
+    // Every snap target within reach of the gaze, nearest first.
     private void CollectSnapCandidates(Vector3 origin, Vector3 gazeDirection, float maxDegrees)
     {
         _snapCandidates.Clear();
+        if (Time.unscaledTime >= _snapCanvasCacheClearTime)
+        {
+            _snapCanvasCache.Clear();
+            _snapCanvasCacheClearTime = Time.unscaledTime + SnapCanvasCacheSeconds;
+        }
+
         if (_selectableBuffer.Length < Selectable.allSelectableCount)
         {
             _selectableBuffer = new Selectable[Mathf.NextPowerOfTwo(Selectable.allSelectableCount)];
@@ -420,42 +435,121 @@ public class VrUiCursor: NOVRBehaviour
         var count = Selectable.AllSelectablesNoAlloc(_selectableBuffer);
         for (var i = 0; i < count; i++)
         {
-            var selectable = _selectableBuffer[i];
-            if (IsSnappable(selectable) &&
-                TryGetSnapDirection(selectable, origin, gazeDirection, out var direction, out var outsideDegrees) &&
-                outsideDegrees <= maxDegrees)
-            {
-                _snapCandidates.Add((selectable, outsideDegrees, direction));
-            }
+            AddSnapCandidate(_selectableBuffer[i], origin, gazeDirection, maxDegrees);
         }
 
         System.Array.Clear(_selectableBuffer, 0, count);
+
+        if (global::DynamicMap.mapMaximized)
+        {
+            if (Time.unscaledTime >= _nextAirbaseIconSearchTime)
+            {
+                _airbaseIcons = FindObjectsOfType<global::AirbaseMapIcon>();
+                _nextAirbaseIconSearchTime = Time.unscaledTime + AirbaseIconSearchSeconds;
+            }
+
+            foreach (var icon in _airbaseIcons)
+            {
+                AddSnapCandidate(icon, origin, gazeDirection, maxDegrees);
+            }
+        }
+
         _snapCandidates.Sort((a, b) => a.OutsideDegrees.CompareTo(b.OutsideDegrees));
     }
 
-    private (Selectable Selectable, float OutsideDegrees, Vector3 Direction)? FindCandidate(Selectable? selectable)
+    private void AddSnapCandidate(Component target, Vector3 origin, Vector3 gazeDirection, float maxDegrees)
     {
-        if (selectable == null) return null;
+        if (!IsSnappable(target) || IsBackdrop(target, origin)) return;
+
+        var rect = GetSnapRect(target);
+        if (rect != null &&
+            TryGetSnapDirection(rect, origin, gazeDirection, out var direction, out var outsideDegrees) &&
+            outsideDegrees <= maxDegrees)
+        {
+            _snapCandidates.Add((target, outsideDegrees, direction));
+        }
+    }
+
+    private (Component Target, float OutsideDegrees, Vector3 Direction)? FindCandidate(Component? target)
+    {
+        if (target == null) return null;
         foreach (var candidate in _snapCandidates)
         {
-            if (candidate.Selectable == selectable) return candidate;
+            if (candidate.Target == target) return candidate;
         }
 
         return null;
     }
 
-    private static bool IsSnappable(Selectable selectable) =>
-        selectable != null && selectable.isActiveAndEnabled && selectable.IsInteractable() &&
-        selectable is not Scrollbar && selectable.gameObject.layer == (int)LayerHelper.GetVrUiLayer();
+    // What a click on this object goes to, among the kinds of thing the gaze cursor snaps to.
+    private static Component? GetClickTarget(GameObject hit)
+    {
+        var mapIcon = hit.GetComponentInParent<global::MapIcon>();
+        return mapIcon != null ? mapIcon : hit.GetComponentInParent<Selectable>();
+    }
 
-    // How far outside the selectable's rect the gaze is (0 when on it), and the direction to put the cursor: the point
-    // of the rect nearest the gaze, kept a little inside its edges so a click lands on it.
-    private static bool TryGetSnapDirection(Selectable selectable, Vector3 origin, Vector3 gazeDirection, out Vector3 direction, out float outsideDegrees)
+    private static RectTransform? GetSnapRect(Component target) => target is global::MapIcon icon
+        ? icon.iconImage != null ? icon.iconImage.rectTransform : null
+        : target.transform as RectTransform;
+
+    private bool IsSnappable(Component target)
+    {
+        switch (target)
+        {
+            case Selectable selectable:
+                if (selectable == null || !selectable.isActiveAndEnabled || !selectable.IsInteractable() || selectable is Scrollbar) return false;
+                break;
+            // Only clickable while picking where to spawn.
+            case global::AirbaseMapIcon icon:
+                if (icon == null || !icon.isActiveAndEnabled || icon.iconImage == null || !icon.iconImage.isActiveAndEnabled || !icon.iconImage.raycastTarget) return false;
+                break;
+            default:
+                return false;
+        }
+
+        return IsOnVrUiCanvas(target);
+    }
+
+    // Menus moved into VR are world-space canvases on the VR UI layer. Rows and buttons the game adds to them later, like
+    // the loadout's weapon rows and the aircraft buttons, keep their prefab's layer, but a world-space canvas is drawn by
+    // its own layer, so it is the canvas that counts. A canvas the game has switched off doesn't.
+    private bool IsOnVrUiCanvas(Component target)
+    {
+        var key = target.GetInstanceID();
+        if (!_snapCanvasCache.TryGetValue(key, out var canvas))
+        {
+            canvas = target.GetComponentInParent<Canvas>();
+            if (canvas != null) canvas = canvas.rootCanvas;
+            _snapCanvasCache[key] = canvas;
+        }
+
+        return canvas != null && canvas.isActiveAndEnabled && canvas.renderMode == RenderMode.WorldSpace &&
+               canvas.gameObject.layer == (int)LayerHelper.GetVrUiLayer();
+    }
+
+    // A button as big as the menu, like the invisible one an open dropdown puts behind its list to close it when clicked
+    // outside: not something to snap to, and it mustn't stop the gaze snapping to what is in front of it.
+    private static bool IsBackdrop(Component target, Vector3 origin)
+    {
+        var rectTransform = GetSnapRect(target);
+        if (rectTransform == null) return false;
+
+        var distance = (rectTransform.position - origin).magnitude;
+        if (distance <= Mathf.Epsilon) return true;
+
+        var scale = rectTransform.lossyScale;
+        var size = rectTransform.rect.size;
+        var minimumSize = 2f * distance * Mathf.Tan(SnapBackdropDegrees * 0.5f * Mathf.Deg2Rad);
+        return size.x * Mathf.Abs(scale.x) > minimumSize && size.y * Mathf.Abs(scale.y) > minimumSize;
+    }
+
+    // How far outside the rect the gaze is (0 when on it), and the direction to put the cursor: the point of the rect
+    // nearest the gaze, kept SnapInsetDegrees in from its edges so the tracker's wobble can't take a click off it, but
+    // no more than a quarter of the way in, so a small button still gets the middle and a long slider its ends.
+    private static bool TryGetSnapDirection(RectTransform rectTransform, Vector3 origin, Vector3 gazeDirection, out Vector3 direction, out float outsideDegrees)
     {
         direction = gazeDirection;
         outsideDegrees = float.MaxValue;
-        if (selectable.transform is not RectTransform rectTransform) return false;
-
         var rect = rectTransform.rect;
         if (rect.width <= 0f || rect.height <= 0f) return false;
 
@@ -466,7 +560,11 @@ public class VrUiCursor: NOVRBehaviour
         var edgePoint = new Vector2(
             Mathf.Clamp(gazePoint.x, rect.xMin, rect.xMax),
             Mathf.Clamp(gazePoint.y, rect.yMin, rect.yMax));
-        var inset = rect.size * SnapInset;
+        var scale = rectTransform.lossyScale;
+        var insetWorld = hitDistance * Mathf.Tan(SnapInsetDegrees * Mathf.Deg2Rad);
+        var inset = new Vector2(
+            Mathf.Min(insetWorld / Mathf.Max(Mathf.Abs(scale.x), 1e-6f), rect.width * 0.25f),
+            Mathf.Min(insetWorld / Mathf.Max(Mathf.Abs(scale.y), 1e-6f), rect.height * 0.25f));
         var cursorPoint = new Vector2(
             Mathf.Clamp(gazePoint.x, rect.xMin + inset.x, rect.xMax - inset.x),
             Mathf.Clamp(gazePoint.y, rect.yMin + inset.y, rect.yMax - inset.y));
@@ -482,11 +580,11 @@ public class VrUiCursor: NOVRBehaviour
 
     // Behind another menu, masked out of a scroll view or in a group that blocks clicks: only snap to what a click
     // there would actually hit.
-    private bool IsTopmostAt(Camera camera, Selectable selectable, Vector3 direction)
+    private bool IsTopmostAt(Camera camera, Component target, Vector3 direction)
     {
         var screenPoint = ToEventScreenPoint(camera, camera.transform.position + direction * DefaultProjectionDistance);
-        return TryGetTopRaycastResult(screenPoint, out var result) &&
-               result.gameObject.GetComponentInParent<Selectable>() == selectable;
+        return TryGetTopRaycastResult(screenPoint, out var result, includeMapIcons: true) &&
+               GetClickTarget(result.gameObject) == target;
     }
 
     // With eye tracking, the game's Select (designate) button clicks the menus too, so they work from the stick.
@@ -601,7 +699,8 @@ public class VrUiCursor: NOVRBehaviour
         return distance > 0f;
     }
 
-    private bool TryGetTopRaycastResult(Vector2 screenPos, out RaycastResult topResult)
+    // Map icons are left out unless asked for, so the cursor sits on the map rather than floating on its icons.
+    private bool TryGetTopRaycastResult(Vector2 screenPos, out RaycastResult topResult, bool includeMapIcons = false)
     {
         topResult = default;
         if (EventSystem.current == null)
@@ -621,7 +720,7 @@ public class VrUiCursor: NOVRBehaviour
         {
             if (result.gameObject == _cursor || 
                 result.distance < 0f ||
-                result.gameObject.GetComponentInParent<global::MapIcon>() != null)
+                (!includeMapIcons && result.gameObject.GetComponentInParent<global::MapIcon>() != null))
             {
                 continue;
             }

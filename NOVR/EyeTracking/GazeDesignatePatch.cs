@@ -9,6 +9,7 @@ namespace NOVR.EyeTracking;
 // The game designates with CombatHUD.TargetSelect, which picks the HUD markers within 100 units of the designator circle
 // and ranks them by how close they are to it. NOVR keeps that circle where the head points, on the same 1000 unit
 // sphere as the markers, so for the length of the call it is moved to where the eyes point instead, then put back.
+// Uses the steady gaze, the one GazeHudReticle draws, so it picks the target the reticle brackets.
 // Also skips designating when the Select press clicked a menu (VrUiCursor.SelectButtonClicksMenus).
 // Patched on its own instead of through CreateAndPatchAll, so a renamed game method only turns this off.
 internal static class GazeDesignatePatch
@@ -45,7 +46,7 @@ internal static class GazeDesignatePatch
 
         var designator = __instance.targetDesignator;
         if (!ModConfiguration.Instance.GazeDesignate.Value || designator == null ||
-            !NOVREyeGaze.TryGetUiDirection(out var gazeDirection))
+            !NOVREyeGaze.TryGetSteadyUiDirection(out var gazeDirection))
         {
             return true;
         }

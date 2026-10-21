@@ -21,8 +21,9 @@ public class ModConfiguration
     public readonly ConfigEntry<GazeCursorMode> GazeMenuCursor;
     public readonly ConfigEntry<bool> SelectClicksMenus;
     public readonly ConfigEntry<float> MenuSnapDegrees;
-    public readonly ConfigEntry<float> MenuGazeSteadiness;
+    public readonly ConfigEntry<float> GazeSteadiness;
     public readonly ConfigEntry<bool> GazeDesignate;
+    public readonly ConfigEntry<bool> ShowGazeReticle;
     public readonly ConfigEntry<bool> ShowGazeDot;
 
     public ModConfiguration(ConfigFile config)
@@ -96,17 +97,23 @@ public class ModConfiguration
             1.5f,
             "When the gaze cursor lands just off a button, it snaps onto the nearest one within this many degrees. 0 turns snapping off.");
 
-        MenuGazeSteadiness = config.Bind(
+        GazeSteadiness = config.Bind(
             "Eye Tracking",
-            "Menu Gaze Steadiness",
+            "Gaze Steadiness",
             0.6f,
-            "How still the gaze menu cursor holds while you look at one spot, from 0 (follows every flicker of the tracker) to 1 (steadiest, slowest to settle on small eye movements). Looking further away always jumps straight there. Doesn't affect designating.");
+            "How still the gaze menu cursor and flight reticle hold while you look at one spot, from 0 (follows every flicker of the tracker) to 1 (steadiest, slowest to settle on small eye movements). Looking further away always jumps straight there. Designating uses the same gaze, so it picks what the reticle shows.");
 
         GazeDesignate = config.Bind(
             "Eye Tracking",
             "Look To Designate",
             true,
             "Select (target designate) picks the target you are looking at instead of the one nearest the head-aimed designator circle.");
+
+        ShowGazeReticle = config.Bind(
+            "Eye Tracking",
+            "Show Gaze Reticle",
+            true,
+            "With Look To Designate, draw a small ring on the HUD where you are looking and bracket the target Select would designate from there.");
 
         ShowGazeDot = config.Bind(
             "Eye Tracking",

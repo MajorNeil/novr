@@ -61,7 +61,11 @@ public class Core : MonoBehaviour
         _vrUi = NOVRBehaviour.Create<NOUIManager>(transform);
         
         _vrTogglerManager = new VrTogglerManager();
-        if (ModConfiguration.Instance.EyeTrackingEnabled.Value) NOVRBehaviour.Create<NOVREyeGaze>(transform);
+        if (ModConfiguration.Instance.EyeTrackingEnabled.Value)
+        {
+            NOVRBehaviour.Create<NOVREyeGaze>(transform);
+            NOVRBehaviour.Create<GazeHudReticle>(transform);
+        }
     }
 
 

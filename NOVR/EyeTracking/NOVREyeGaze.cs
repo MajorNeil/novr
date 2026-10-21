@@ -13,9 +13,9 @@ namespace NOVR.EyeTracking;
 // Where the player is looking, from the OpenXR eye gaze device that EyeGazeFeatureBootstrap asks for. The gaze comes
 // in tracking space, the same space as the headset pose, so it is turned into the VR UI space the way the UI camera
 // is (its parent's rotation and the recenter offset). Held through blinks, and smoothed two ways:
-// - for designating, a One Euro filter, which stays steady while the eyes rest on something and keeps up when they jump;
-// - for the menu cursor, which is on screen all the time, a steadier one that sits still while the eyes rest on
-//   something and jumps when they move on (see UpdateMenuDirection).
+// - steady, for everything that is on screen or acts on the gaze (menu cursor, flight reticle, designating): it sits
+//   still while the eyes rest on something and jumps when they move on (see UpdateSteadyDirection);
+// - light, a One Euro filter, for the calibration dot, which should show what the tracker reports.
 // Runs before VrUiCursor, which reads it every frame.
 [DefaultExecutionOrder(-1100)]
 public class NOVREyeGaze : NOVRBehaviour
@@ -28,9 +28,9 @@ public class NOVREyeGaze : NOVRBehaviour
     private const float FilterMinCutoff = 1.5f;
     private const float FilterBeta = 0.6f;
     private const float FilterDerivativeCutoff = 1f;
-    private const float MenuJumpDegrees = 2f;
-    private const float MenuSlowestCutoff = 0.5f;
-    private const float MenuFastestCutoff = 4f;
+    private const float SteadyJumpDegrees = 2f;
+    private const float SteadySlowestCutoff = 0.5f;
+    private const float SteadyFastestCutoff = 4f;
     private const float DotDistance = 10f;
     private const float DotDegrees = 0.5f;
     private const int DotTextureSize = 32;
@@ -47,8 +47,8 @@ public class NOVREyeGaze : NOVRBehaviour
 
     private OneEuroVector3 _filter;
     private Vector3 _trackingDirection = Vector3.forward;
-    private Vector3 _menuTrackingDirection = Vector3.forward;
-    private Vector3? _menuJumpCandidate;
+    private Vector3 _steadyTrackingDirection = Vector3.forward;
+    private Vector3? _steadyJumpCandidate;
     private float _lastGazeTime = float.NegativeInfinity;
     private float _startTime;
     private bool _loggedGaze;
@@ -58,13 +58,13 @@ public class NOVREyeGaze : NOVRBehaviour
 
     private bool HasGaze => Time.unscaledTime - _lastGazeTime <= BlinkHoldSeconds;
 
-    // Gaze direction in the VR UI space (menus, HUD, cursor), from the UI camera's position.
+    // Gaze direction in the VR UI space (menus, HUD, cursor), from the UI camera's position, lightly smoothed.
     public static bool TryGetUiDirection(out Vector3 direction) => TryGetUiDirection(false, out direction);
 
-    // The same, steadied for the menu cursor.
-    public static bool TryGetMenuDirection(out Vector3 direction) => TryGetUiDirection(true, out direction);
+    // The same, steadied: what the menu cursor and flight reticle show and what designating uses.
+    public static bool TryGetSteadyUiDirection(out Vector3 direction) => TryGetUiDirection(true, out direction);
 
-    private static bool TryGetUiDirection(bool menu, out Vector3 direction)
+    private static bool TryGetUiDirection(bool steady, out Vector3 direction)
     {
         direction = Vector3.forward;
         var gaze = I;
@@ -73,7 +73,7 @@ public class NOVREyeGaze : NOVRBehaviour
         var uiCameraParent = APIBus.CockpitHudCamera.transform.parent;
         var trackingToUi = (uiCameraParent != null ? uiCameraParent.rotation : Quaternion.identity) *
                            NOVRHeadsetData.RotationCalibrationOffset;
-        direction = trackingToUi * (menu ? gaze._menuTrackingDirection : gaze._trackingDirection);
+        direction = trackingToUi * (steady ? gaze._steadyTrackingDirection : gaze._trackingDirection);
         return true;
     }
 
@@ -99,7 +99,7 @@ public class NOVREyeGaze : NOVRBehaviour
             var restart = !HasGaze;
             if (restart) _filter.Reset();
             _trackingDirection = _filter.Filter(direction, Time.unscaledDeltaTime, FilterMinCutoff, FilterBeta, FilterDerivativeCutoff).normalized;
-            UpdateMenuDirection(direction, restart);
+            UpdateSteadyDirection(direction, restart);
             _lastGazeTime = Time.unscaledTime;
             if (!_loggedGaze)
             {
@@ -116,39 +116,39 @@ public class NOVREyeGaze : NOVRBehaviour
     }
 
     // The eyes rest on something, then jump to the next: a fixation filter rather than a plain low-pass. Within
-    // MenuJumpDegrees the cursor is smoothed heavily (Menu Gaze Steadiness), so the tracker's jitter doesn't show; past
-    // it the cursor goes straight to the new spot instead of sliding over everything in between. One sample that far
-    // out is as likely to be noise, so it takes two in a row that agree, and the jump lands on their average.
-    private void UpdateMenuDirection(Vector3 direction, bool restart)
+    // SteadyJumpDegrees the gaze is smoothed heavily (Gaze Steadiness), so the tracker's jitter doesn't show; past it
+    // the gaze goes straight to the new spot instead of sliding over everything in between. One sample that far out is
+    // as likely to be noise, so it takes two in a row that agree, and the jump lands on their average.
+    private void UpdateSteadyDirection(Vector3 direction, bool restart)
     {
         if (restart)
         {
-            _menuTrackingDirection = direction;
-            _menuJumpCandidate = null;
+            _steadyTrackingDirection = direction;
+            _steadyJumpCandidate = null;
             return;
         }
 
-        if (Vector3.Angle(_menuTrackingDirection, direction) > MenuJumpDegrees)
+        if (Vector3.Angle(_steadyTrackingDirection, direction) > SteadyJumpDegrees)
         {
-            if (_menuJumpCandidate is { } candidate && Vector3.Angle(candidate, direction) <= MenuJumpDegrees)
+            if (_steadyJumpCandidate is { } candidate && Vector3.Angle(candidate, direction) <= SteadyJumpDegrees)
             {
-                _menuTrackingDirection = (candidate + direction).normalized;
-                _menuJumpCandidate = null;
+                _steadyTrackingDirection = (candidate + direction).normalized;
+                _steadyJumpCandidate = null;
             }
             else
             {
-                _menuJumpCandidate = direction;
+                _steadyJumpCandidate = direction;
             }
 
             return;
         }
 
-        _menuJumpCandidate = null;
-        var steadiness = Mathf.Clamp01(ModConfiguration.Instance.MenuGazeSteadiness.Value);
-        var cutoff = MenuFastestCutoff * Mathf.Pow(MenuSlowestCutoff / MenuFastestCutoff, steadiness);
+        _steadyJumpCandidate = null;
+        var steadiness = Mathf.Clamp01(ModConfiguration.Instance.GazeSteadiness.Value);
+        var cutoff = SteadyFastestCutoff * Mathf.Pow(SteadySlowestCutoff / SteadyFastestCutoff, steadiness);
         var timeConstant = 1f / (2f * Mathf.PI * cutoff);
         var deltaTime = Time.unscaledDeltaTime;
-        _menuTrackingDirection = Vector3.Slerp(_menuTrackingDirection, direction, deltaTime / (deltaTime + timeConstant)).normalized;
+        _steadyTrackingDirection = Vector3.Slerp(_steadyTrackingDirection, direction, deltaTime / (deltaTime + timeConstant)).normalized;
     }
 
     private bool TryReadGazeRotation(out Quaternion rotation, out string source)
