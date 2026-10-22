@@ -47,6 +47,7 @@ public class NOUIManager : NOVRBehaviour
         Create<VrUiCursor>(transform);
         Create<NativeVrUiRoot>(transform);
         Create<InGameVrUiBar>(transform);
+        Create<ThreatAwareness>(transform);
         ConfigureUiCameras();
     }
 

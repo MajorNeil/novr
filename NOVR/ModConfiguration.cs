@@ -17,6 +17,11 @@ public class ModConfiguration
     public readonly ConfigEntry<float> InGameUiScale;
     public readonly ConfigEntry<float> InGameUiDistance;
     public readonly ConfigEntry<float> HudScale;
+    public readonly ConfigEntry<float> MinimapZoomOut;
+    public readonly ConfigEntry<bool> ThreatRing;
+    public readonly ConfigEntry<float> RingDegrees;
+    public readonly ConfigEntry<float> AircraftRangeKm;
+    public readonly ConfigEntry<bool> MissileBanner;
     public readonly ConfigEntry<bool> EyeTrackingEnabled;
     public readonly ConfigEntry<GazeCursorMode> GazeMenuCursor;
     public readonly ConfigEntry<bool> SelectClicksMenus;
@@ -72,6 +77,36 @@ public class ModConfiguration
             "HUD Scale",
             1.0f,
             "Size multiplier for the flight HUD: speed, altitude, heading and artificial horizon readouts, pitch ladder, weapon panels and target markers. Markers stay on what they point at. Values from 0.5 to 2.0 are supported. Also adjustable in game from the VR UI button under the menus.");
+
+        MinimapZoomOut = config.Bind(
+            "In-Game UI",
+            "Minimap Zoom Out",
+            1.0f,
+            "How far the corner minimap is zoomed out compared with the game's own zoom: 2 shows twice as much ground across, 0.5 zooms in. Values from 0.5 to 8.0 are supported. The full map is unaffected. Also adjustable in game from the VR UI button under the menus.");
+
+        ThreatRing = config.Bind(
+            "Threat Awareness",
+            "Threat Ring",
+            true,
+            "In flight, a ring of chevrons near the edge of your view, moving with your head, pointing at incoming missiles (IR orange, radar red, other yellow; flashing faster as they close), enemy aircraft within Aircraft Range and radars that have found you (cyan, LOCK when guiding at you). A double chevron means it is behind you. Missiles inside the ring are boxed where they are.");
+
+        RingDegrees = config.Bind(
+            "Threat Awareness",
+            "Ring Degrees",
+            30f,
+            "How far out from the centre of your view the threat ring sits, in degrees. Values from 15 to 45 are supported; lower is easier to notice, higher keeps it out of the way.");
+
+        AircraftRangeKm = config.Bind(
+            "Threat Awareness",
+            "Aircraft Range km",
+            10f,
+            "Enemy aircraft within this many kilometres get a chevron on the threat ring (the nearest six). 0 shows none.");
+
+        MissileBanner = config.Bind(
+            "Threat Awareness",
+            "Missile Banner",
+            true,
+            "While a missile is coming at you, name the nearest at the top of the threat ring: its seeker (IR, ARH, SARH...) and range, and how many more there are, in the seeker's colour.");
 
         EyeTrackingEnabled = config.Bind(
             "Eye Tracking",
