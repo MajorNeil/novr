@@ -8,13 +8,14 @@ using UnityEngine.UI;
 
 namespace NOVR.VrUi;
 
-// Near situational awareness in the periphery. A ring sits Ring Degrees out from the centre of the view and moves with
+// Near situational awareness in the periphery. A ring sits Ring Radius Degrees out from the centre of the view, moving with
 // the head; each incoming missile, enemy aircraft within Aircraft Range and radar that has found the aircraft gets a
 // chevron on it, round the ring at the side it is on and pointing at it, with a short label. A double chevron means it
 // is behind. Missiles are coloured by seeker (IR orange, radar red, anything else yellow), flash faster as they close
 // and, once inside the ring, are boxed where they are instead; the nearest is also named in a banner at the top of the
 // ring. Radars are cyan, LOCK when one is guiding at the aircraft. Enemy aircraft and radars inside the ring are left to
-// the HUD's own markers. The game's own warnings (threat list, alarms, notch indicator) are unchanged.
+// the HUD's own markers. Just above the middle of the view, a center warning says what kind of missile it is (see
+// UpdateCenterWarning). The game's own warnings (threat list, alarms, notch indicator) are unchanged.
 public class ThreatAwareness : NOVRBehaviour
 {
     // The ring is drawn on a plane this far ahead of the eyes, the HUD's distance, so it is in focus with the HUD.
@@ -29,6 +30,11 @@ public class ThreatAwareness : NOVRBehaviour
     private const float LabelInsetDegrees = 2.8f;
     private const float BannerDegrees = 1.6f;
     private const float BannerInsetDegrees = 4.5f;
+    private const float CenterWarningDegrees = 2.2f;
+    private const float CenterWarningHeightDegrees = 5f;
+    private const float CenterRangeTextScale = 0.6f;
+    private const float WarningHoldSeconds = 1.5f;
+    private const float WarningFadeSeconds = 1.5f;
     private const float RadarMemorySeconds = 3f;
     private const int MaxAircraft = 6;
     private const int TextureSize = 64;
@@ -53,8 +59,13 @@ public class ThreatAwareness : NOVRBehaviour
     private readonly Dictionary<Unit, (float Time, bool Lock)> _radarContacts = new();
     private readonly List<Unit> _expiredRadars = new();
     private readonly Dictionary<Shape, Texture2D> _textures = new();
+    private readonly List<(Missile Missile, float Distance, Color Color, string Seeker)> _incoming = new();
+    private readonly HashSet<Missile> _seenMissiles = new();
+    private Missile? _lastDetected;
+    private float _lastDetectedTime = float.NegativeInfinity;
     private GameObject? _root;
     private Text? _banner;
+    private Text? _centerWarning;
     private Font? _font;
     private Aircraft? _listeningTo;
     private int _used;
@@ -71,7 +82,8 @@ public class ThreatAwareness : NOVRBehaviour
         var config = ModConfiguration.Instance;
         var showRing = config.ThreatRing.Value;
         var showBanner = config.MissileBanner.Value;
-        if ((!showRing && !showBanner) || !TryGetFlying(out var aircraft, out var mainCamera))
+        var showCenter = config.CenterMissileWarning.Value;
+        if ((!showRing && !showBanner && !showCenter) || !TryGetFlying(out var aircraft, out var mainCamera))
         {
             Listen(null);
             if (_root != null && _root.activeSelf) _root.SetActive(false);
@@ -85,7 +97,7 @@ public class ThreatAwareness : NOVRBehaviour
             if (!_root!.activeSelf) _root.SetActive(true);
             _used = 0;
             var ringDegrees = Mathf.Clamp(config.RingDegrees.Value, MinRingDegrees, MaxRingDegrees);
-            var nearest = ShowMissiles(aircraft, mainCamera, ringDegrees, showRing);
+            ShowMissiles(aircraft, mainCamera, ringDegrees, showRing);
             if (showRing)
             {
                 ShowAircraft(aircraft, mainCamera, ringDegrees, config.AircraftRangeKm.Value * 1000f);
@@ -93,7 +105,8 @@ public class ThreatAwareness : NOVRBehaviour
             }
 
             for (var i = _used; i < _indicators.Count; i++) _indicators[i].SetVisible(false);
-            UpdateBanner(showBanner ? nearest : null, ringDegrees);
+            UpdateBanner(showBanner, ringDegrees);
+            UpdateCenterWarning(showCenter, Mathf.Clamp(config.CenterWarningRangeKm.Value, 0f, 20f) * 1000f);
         }
         catch (Exception exception)
         {
@@ -116,29 +129,50 @@ public class ThreatAwareness : NOVRBehaviour
         return true;
     }
 
-    // Missiles the warning system knows are coming at the aircraft; returns the nearest, for the banner.
-    private (Color Color, string Label, float Distance, int Count)? ShowMissiles(Aircraft aircraft, Camera mainCamera, float ringDegrees, bool showRing)
+    // Missiles the warning system knows are coming at the aircraft, noting each the first time it shows up.
+    private void ShowMissiles(Aircraft aircraft, Camera mainCamera, float ringDegrees, bool showRing)
     {
+        _incoming.Clear();
         var warning = aircraft.GetMissileWarningSystem();
         var missiles = warning != null ? warning.knownMissiles : null;
-        if (missiles == null) return null;
-
-        (Color Color, string Label, float Distance, int Count)? nearest = null;
-        var count = 0;
-        foreach (var missile in missiles)
+        if (missiles != null)
         {
-            if (missile == null || missile.disabled) continue;
+            foreach (var missile in missiles)
+            {
+                if (missile == null || missile.disabled) continue;
 
-            count++;
-            var position = missile.transform.position;
-            var distance = Vector3.Distance(aircraft.transform.position, position);
-            var (color, seeker) = DescribeMissile(missile);
-            color.a = MissileAlpha(missile, distance);
-            if (nearest == null || distance < nearest.Value.Distance) nearest = (color, seeker, distance, 0);
-            if (showRing) Show(mainCamera, position, ringDegrees, color, $"{seeker} {UnitConverter.DistanceReading(distance)}", MissileChevronDegrees, boxInside: true);
+                if (_seenMissiles.Add(missile))
+                {
+                    _lastDetected = missile;
+                    _lastDetectedTime = Time.unscaledTime;
+                }
+
+                var position = missile.transform.position;
+                var distance = Vector3.Distance(aircraft.transform.position, position);
+                var (color, seeker) = DescribeMissile(missile);
+                _incoming.Add((missile, distance, color, seeker));
+                if (!showRing) continue;
+
+                var flashing = color;
+                flashing.a = MissileAlpha(missile, distance);
+                Show(mainCamera, position, ringDegrees, flashing, $"{seeker} {UnitConverter.DistanceReading(distance)}", MissileChevronDegrees, boxInside: true);
+            }
         }
 
-        return nearest is { } found ? (found.Color, found.Label, found.Distance, count) : null;
+        // Forgotten once none are left, so the set doesn't grow over a long flight.
+        if (_incoming.Count == 0) _seenMissiles.Clear();
+    }
+
+    // The nearest incoming missile within range, if any.
+    private (Missile Missile, float Distance, Color Color, string Seeker)? NearestIncoming(float range)
+    {
+        (Missile Missile, float Distance, Color Color, string Seeker)? nearest = null;
+        foreach (var incoming in _incoming)
+        {
+            if (incoming.Distance <= range && (nearest == null || incoming.Distance < nearest.Value.Distance)) nearest = incoming;
+        }
+
+        return nearest;
     }
 
     private static (Color Color, string Seeker) DescribeMissile(Missile missile)
@@ -241,6 +275,8 @@ public class ThreatAwareness : NOVRBehaviour
         }
 
         _radarContacts.Clear();
+        _seenMissiles.Clear();
+        _lastDetected = null;
         _listeningTo = aircraft;
         if (aircraft != null) aircraft.onRadarWarning += OnRadarWarning;
     }
@@ -285,24 +321,85 @@ public class ThreatAwareness : NOVRBehaviour
         indicator.Set(_textures[shape], outward * ringRadius, round * Mathf.Rad2Deg - 90f, AngleToPlane(chevronDegrees) * hudScale, color, label, outward * labelRadius, hudScale);
     }
 
-    private void UpdateBanner((Color Color, string Label, float Distance, int Count)? nearest, float ringDegrees)
+    private void UpdateBanner(bool show, float ringDegrees)
     {
         if (_banner == null) return;
-        if (nearest is not { } missile)
+        if (!show || NearestIncoming(float.MaxValue) is not { } missile)
         {
             if (_banner.enabled) _banner.enabled = false;
             return;
         }
 
         var hudScale = InGameUiPlacement.HudScale;
-        var more = missile.Count > 1 ? $"  +{missile.Count - 1}" : "";
-        _banner.text = $"MISSILE  {missile.Label}  {UnitConverter.DistanceReading(missile.Distance)}{more}";
-        _banner.color = missile.Color;
+        var more = _incoming.Count > 1 ? $"  +{_incoming.Count - 1}" : "";
+        _banner.text = $"MISSILE  {missile.Seeker}  {UnitConverter.DistanceReading(missile.Distance)}{more}";
+        var color = missile.Color;
+        color.a = MissileAlpha(missile.Missile, missile.Distance);
+        _banner.color = color;
         _banner.fontSize = Mathf.RoundToInt(AngleToPlane(BannerDegrees) * hudScale / CanvasUnitMeters);
         var height = PlaneDistance * Mathf.Tan((ringDegrees - BannerInsetDegrees * hudScale) * Mathf.Deg2Rad);
         _banner.rectTransform.localPosition = new Vector3(0f, height / CanvasUnitMeters, 0f);
         if (!_banner.enabled) _banner.enabled = true;
     }
+
+    // What kind of missile is coming, in the middle of the view. It shows the moment the warning system detects one, then
+    // fades, so a missile fired from far off doesn't sit in front of the player all the way in; while one is within
+    // stickRange it stays, pulsing, with the range, for the nearest such.
+    private void UpdateCenterWarning(bool show, float stickRange)
+    {
+        if (_centerWarning == null) return;
+
+        (Missile Missile, float Distance, Color Color, string Seeker)? shown = null;
+        var alpha = 0f;
+        var sticking = false;
+        if (show && NearestIncoming(stickRange) is { } near)
+        {
+            shown = near;
+            sticking = true;
+            var hertz = Mathf.Lerp(3f, 1f, Mathf.InverseLerp(2000f, Mathf.Max(stickRange, 2001f), near.Distance));
+            alpha = 0.75f + 0.25f * Mathf.Sin(Time.unscaledTime * hertz * 2f * Mathf.PI);
+        }
+        else if (show && _lastDetected != null)
+        {
+            var age = Time.unscaledTime - _lastDetectedTime;
+            foreach (var incoming in _incoming)
+            {
+                if (incoming.Missile != _lastDetected || age >= WarningHoldSeconds + WarningFadeSeconds) continue;
+
+                shown = incoming;
+                alpha = age <= WarningHoldSeconds ? 1f : 1f - (age - WarningHoldSeconds) / WarningFadeSeconds;
+            }
+        }
+
+        if (shown is not { } missile || alpha <= 0f)
+        {
+            if (_centerWarning.enabled) _centerWarning.enabled = false;
+            return;
+        }
+
+        var hudScale = InGameUiPlacement.HudScale;
+        var fontSize = Mathf.RoundToInt(AngleToPlane(CenterWarningDegrees) * hudScale / CanvasUnitMeters);
+        var name = WarningName(missile.Seeker);
+        _centerWarning.text = sticking
+            ? $"{name}\n<size={Mathf.RoundToInt(fontSize * CenterRangeTextScale)}>{UnitConverter.DistanceReading(missile.Distance)}</size>"
+            : name;
+        _centerWarning.fontSize = fontSize;
+        var color = missile.Color;
+        color.a = alpha;
+        _centerWarning.color = color;
+        var height = PlaneDistance * Mathf.Tan(CenterWarningHeightDegrees * Mathf.Deg2Rad);
+        _centerWarning.rectTransform.localPosition = new Vector3(0f, height / CanvasUnitMeters, 0f);
+        if (!_centerWarning.enabled) _centerWarning.enabled = true;
+    }
+
+    private static string WarningName(string seeker) => seeker switch
+    {
+        "IR" => "IR MISSILE",
+        "ARH" or "SARH" => "RADAR MISSILE",
+        "Optical" or "INS / Opt." => "OPTICAL MISSILE",
+        "MSL" => "MISSILE",
+        _ => $"{seeker.ToUpperInvariant()} MISSILE",
+    };
 
     private static Color HostileColor()
     {
@@ -347,6 +444,9 @@ public class ThreatAwareness : NOVRBehaviour
 
         _banner = CreateText("Missile Banner", _root.transform, _font);
         _banner.enabled = false;
+        _centerWarning = CreateText("Center Missile Warning", _root.transform, _font);
+        _centerWarning.GetComponent<Outline>().effectDistance = new Vector2(6f, -6f);
+        _centerWarning.enabled = false;
         LayerHelper.SetLayerRecursive(_root.transform, LayerHelper.GetVrUiLayer());
     }
 

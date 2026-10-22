@@ -7,6 +7,8 @@ namespace NOVR;
 public class ModConfiguration
 {
     public static ModConfiguration Instance;
+    // 0.4.18's "Ring Degrees" default, which put the ring further out than wanted.
+    private const float OldRingDegreesDefault = 30f;
     
 
     public readonly ConfigFile Config;
@@ -22,6 +24,8 @@ public class ModConfiguration
     public readonly ConfigEntry<float> RingDegrees;
     public readonly ConfigEntry<float> AircraftRangeKm;
     public readonly ConfigEntry<bool> MissileBanner;
+    public readonly ConfigEntry<bool> CenterMissileWarning;
+    public readonly ConfigEntry<float> CenterWarningRangeKm;
     public readonly ConfigEntry<bool> EyeTrackingEnabled;
     public readonly ConfigEntry<GazeCursorMode> GazeMenuCursor;
     public readonly ConfigEntry<bool> SelectClicksMenus;
@@ -90,11 +94,20 @@ public class ModConfiguration
             true,
             "In flight, a ring of chevrons near the edge of your view, moving with your head, pointing at incoming missiles (IR orange, radar red, other yellow; flashing faster as they close), enemy aircraft within Aircraft Range and radars that have found you (cyan, LOCK when guiding at you). A double chevron means it is behind you. Missiles inside the ring are boxed where they are.");
 
+        // The setting used to be "Ring Degrees". Its line comes out of the file, and a value other than its old default
+        // carries over. Saving is held off meanwhile, so the old line isn't written back on every launch.
+        var oldRingDegrees = new ConfigDefinition("Threat Awareness", "Ring Degrees");
+        var saveOnConfigSet = config.SaveOnConfigSet;
+        config.SaveOnConfigSet = false;
+        var keptRingDegrees = config.Bind(oldRingDegrees, OldRingDegreesDefault).Value;
+        config.Remove(oldRingDegrees);
+        config.SaveOnConfigSet = saveOnConfigSet;
         RingDegrees = config.Bind(
             "Threat Awareness",
-            "Ring Degrees",
-            30f,
+            "Ring Radius Degrees",
+            24f,
             "How far out from the centre of your view the threat ring sits, in degrees. Values from 15 to 45 are supported; lower is easier to notice, higher keeps it out of the way.");
+        if (!Mathf.Approximately(keptRingDegrees, OldRingDegreesDefault)) RingDegrees.Value = keptRingDegrees;
 
         AircraftRangeKm = config.Bind(
             "Threat Awareness",
@@ -107,6 +120,18 @@ public class ModConfiguration
             "Missile Banner",
             true,
             "While a missile is coming at you, name the nearest at the top of the threat ring: its seeker (IR, ARH, SARH...) and range, and how many more there are, in the seeker's colour.");
+
+        CenterMissileWarning = config.Bind(
+            "Threat Awareness",
+            "Center Missile Warning",
+            true,
+            "Just above the middle of your view, say what kind of missile is coming (IR MISSILE, RADAR MISSILE, OPTICAL MISSILE) the moment one is detected, fading out after a few seconds. While one is within Center Warning Range km it stays, with its range.");
+
+        CenterWarningRangeKm = config.Bind(
+            "Threat Awareness",
+            "Center Warning Range km",
+            8f,
+            "Within this many kilometres an incoming missile keeps the center warning up until it is gone. Values from 0 (only the warning on detection) to 20 are supported. IR and optical missiles are only detected within 5 km, so they stay up from the start.");
 
         EyeTrackingEnabled = config.Bind(
             "Eye Tracking",
