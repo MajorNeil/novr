@@ -65,6 +65,7 @@ public class Core : MonoBehaviour
         {
             NOVRBehaviour.Create<NOVREyeGaze>(transform);
             NOVRBehaviour.Create<GazeHudReticle>(transform);
+            NOVRBehaviour.Create<GazeContactInfo>(transform);
         }
     }
 

@@ -23,6 +23,12 @@ public class ModConfiguration
     public readonly ConfigEntry<bool> ThreatRing;
     public readonly ConfigEntry<float> RingDegrees;
     public readonly ConfigEntry<float> AircraftRangeKm;
+    public readonly ConfigEntry<float> FriendlyRangeKm;
+    public readonly ConfigEntry<bool> NotchMarks;
+    public readonly ConfigEntry<float> NotchToleranceDegrees;
+    public readonly ConfigEntry<bool> MissileTones;
+    public readonly ConfigEntry<float> MissileToneRangeKm;
+    public readonly ConfigEntry<float> MissileToneVolume;
     public readonly ConfigEntry<bool> MissileBanner;
     public readonly ConfigEntry<bool> CenterMissileWarning;
     public readonly ConfigEntry<float> CenterWarningRangeKm;
@@ -34,6 +40,8 @@ public class ModConfiguration
     public readonly ConfigEntry<bool> GazeDesignate;
     public readonly ConfigEntry<bool> ShowGazeReticle;
     public readonly ConfigEntry<bool> ShowGazeDot;
+    public readonly ConfigEntry<bool> GazeContactInfo;
+    public readonly ConfigEntry<float> GazeContactDwellSeconds;
 
     public ModConfiguration(ConfigFile config)
     {
@@ -115,6 +123,42 @@ public class ModConfiguration
             10f,
             "Enemy aircraft within this many kilometres get a chevron on the threat ring (the nearest six). 0 shows none.");
 
+        FriendlyRangeKm = config.Bind(
+            "Threat Awareness",
+            "Friendly Range km",
+            5f,
+            "Friendly aircraft within this many kilometres get a smaller, dimmer chevron on the threat ring in the HUD's friendly colour (the nearest four). 0 shows none.");
+
+        NotchMarks = config.Bind(
+            "Threat Awareness",
+            "Notch Marks",
+            true,
+            "While a radar missile is coming, two green ticks on the threat ring at the headings that put you across the line from the radar guiding it (the notch, where the game's radar loses the boost it gets from your speed towards it). The brighter one is the smaller turn; it reads NOTCH once you are in it.");
+
+        NotchToleranceDegrees = config.Bind(
+            "Threat Awareness",
+            "Notch Tolerance Degrees",
+            12f,
+            "How close to straight across the radar's line of sight your flight path has to be to count as in the notch, for the NOTCH mark and the notch tone.");
+
+        MissileTones = config.Bind(
+            "Threat Awareness",
+            "Missile Tones",
+            true,
+            "Sounds from the direction of the missiles that need a reaction, within Missile Tone Range km: a continuous tone for an active radar (ARH) missile, which turns into a lower pulsing tone while you are in its notch, and beeps for IR, optical and other missiles, quicker as they close (pitched lower when behind you). Semi-active radar missiles, and ARH ones further out, are left to the game's alarm. Plays through the game's missile alert volume.");
+
+        MissileToneRangeKm = config.Bind(
+            "Threat Awareness",
+            "Missile Tone Range km",
+            8f,
+            "How close a missile has to be for Missile Tones. Values from 0 to 30 are supported.");
+
+        MissileToneVolume = config.Bind(
+            "Threat Awareness",
+            "Missile Tone Volume",
+            0.5f,
+            "Volume of the Missile Tones, from 0 to 1, on top of the game's missile alert volume.");
+
         MissileBanner = config.Bind(
             "Threat Awareness",
             "Missile Banner",
@@ -180,6 +224,18 @@ public class ModConfiguration
             "Show Gaze Dot",
             false,
             "Draw a small dot where the headset says you are looking, to check the eye tracking calibration.");
+
+        GazeContactInfo = config.Bind(
+            "Eye Tracking",
+            "Gaze Contact Info",
+            true,
+            "Rest your gaze on a HUD marker for a moment to show beside it what it is, its range and altitude, and RDR / LOCK if its radar has found you or MSL if a missile it fired is coming at you.");
+
+        GazeContactDwellSeconds = config.Bind(
+            "Eye Tracking",
+            "Gaze Contact Dwell Seconds",
+            0.3f,
+            "How long your gaze has to rest on a marker before Gaze Contact Info shows.");
     }
 }
 
