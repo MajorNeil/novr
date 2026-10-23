@@ -6,13 +6,15 @@ using UnityEngine;
 namespace NOVR.VrUi.Menu;
 
 // The game's main menu, rebuilt for a headset: the game's entries down a panel on the left, in the game's own font and
-// colours, and the rest of the view left open onto the hangar. Each entry still goes through the game's own button
-// (NativeGameActionAdapter), so it does exactly what the game's menu does. Under it, what the controls do on the device
-// last used, and the game's own hints, as on its flat menu.
+// colours, and the rest of the view left open onto the hangar. Each of the game's entries still goes through the game's
+// own button (NativeGameActionAdapter), so it does exactly what the game's menu does; Settings opens NOVR's settings
+// screen, which has the game's settings and NOVR's. Under it, what the controls do on the device last used, and the
+// game's own hints, as on its flat menu.
 internal sealed class MainMenuScreen : MenuScreen
 {
-    private const float RailX = -620f;
-    private static readonly Vector2 RailSize = new(500f, 960f);
+    // Where the left-hand panel is, which the settings share and the hangar's briefing board stands behind.
+    public static readonly Vector2 RailCenter = new(-620f, 0f);
+    public static readonly Vector2 RailSize = new(500f, 960f);
     private const float ButtonWidth = 440f;
     private const float PrimaryHeight = 62f;
     private const float PrimaryStep = 72f;
@@ -22,6 +24,8 @@ internal sealed class MainMenuScreen : MenuScreen
 
     private readonly NativeGameActionAdapter _actions;
     private readonly Func<GameObject?> _mainCanvas;
+    private readonly Func<float> _recenterSeconds;
+    private readonly MenuButton _recenter;
     private readonly TextMeshProUGUI _prompts;
     private readonly RectTransform _hint;
     private readonly TextMeshProUGUI _hintTitle;
@@ -32,13 +36,14 @@ internal sealed class MainMenuScreen : MenuScreen
     private MenuDevice _promptDevice = (MenuDevice)(-1);
 
     public MainMenuScreen(RectTransform canvas, NativeGameActionAdapter actions, Func<GameObject?> mainCanvas,
-        Action openVrSettings, Action openMenuControls)
+        Action<SettingsScreen.Tab> openSettings, Action openMenuControls, Action recenter, Func<float> recenterSeconds)
         : base(canvas, "NOVR Main Menu")
     {
         _actions = actions;
         _mainCanvas = mainCanvas;
+        _recenterSeconds = recenterSeconds;
 
-        var rail = MenuKit.Panel(Root, "Rail", new Vector2(RailX, 0f), RailSize).rectTransform;
+        var rail = MenuKit.Panel(Root, "Rail", RailCenter, RailSize).rectTransform;
         var top = RailSize.y / 2f;
         MenuKit.Text(rail, "Title", "NUCLEAR OPTION", MenuStyle.TitleSize, MenuStyle.Text, TextAlignmentOptions.Left,
             new Vector2(0f, top - 78f), new Vector2(ButtonWidth, 80f), heading: true);
@@ -50,11 +55,14 @@ internal sealed class MainMenuScreen : MenuScreen
         if (actions.HasMainMenuButton(NativeGameAction.MissionEditor)) AddPrimary(rail, "MISSION EDITOR", NativeGameAction.MissionEditor, ref y);
         AddPrimary(rail, "ENCYCLOPEDIA", NativeGameAction.Encyclopedia, ref y);
         AddPrimary(rail, "WORKSHOP", NativeGameAction.Workshop, ref y);
-        AddPrimary(rail, "SETTINGS", NativeGameAction.Settings, ref y);
+        Add(MenuKit.Button(rail, "SETTINGS", "SETTINGS", new Vector2(0f, y), new Vector2(ButtonWidth, PrimaryHeight),
+            () => openSettings(SettingsScreen.Tab.Audio)));
+        y -= PrimaryStep;
 
         y -= 18f;
-        AddSecondary(rail, "VR SETTINGS", openVrSettings, ref y);
+        AddSecondary(rail, "VR SETTINGS", () => openSettings(SettingsScreen.Tab.VrView), ref y);
         AddSecondary(rail, "MENU CONTROLS", openMenuControls, ref y);
+        _recenter = AddSecondary(rail, "RECENTER VIEW", recenter, ref y);
 
         y -= 18f;
         Add(MenuKit.Button(rail, "Exit Game", "EXIT GAME", new Vector2(0f, y), new Vector2(ButtonWidth, PrimaryHeight),
@@ -84,6 +92,10 @@ internal sealed class MainMenuScreen : MenuScreen
 
     protected override void OnTick()
     {
+        var recenterIn = _recenterSeconds();
+        var recenterLabel = recenterIn > 0f ? $"RECENTER IN {recenterIn:0.0}" : "RECENTER VIEW";
+        if (_recenter.Label != null && _recenter.Label.text != recenterLabel) _recenter.SetLabel(recenterLabel);
+
         if (_promptDevice != MenuInput.LastDevice)
         {
             _promptDevice = MenuInput.LastDevice;
@@ -131,10 +143,11 @@ internal sealed class MainMenuScreen : MenuScreen
         y -= PrimaryStep;
     }
 
-    private void AddSecondary(RectTransform rail, string label, Action open, ref float y)
+    private MenuButton AddSecondary(RectTransform rail, string label, Action open, ref float y)
     {
-        Add(MenuKit.Button(rail, label, label, new Vector2(0f, y), new Vector2(ButtonWidth, SecondaryHeight), open,
+        var button = Add(MenuKit.Button(rail, label, label, new Vector2(0f, y), new Vector2(ButtonWidth, SecondaryHeight), open,
             MenuButton.Look.Secondary));
         y -= SecondaryStep;
+        return button;
     }
 }

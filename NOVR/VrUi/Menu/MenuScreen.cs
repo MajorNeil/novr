@@ -6,6 +6,8 @@ namespace NOVR.VrUi.Menu;
 // One of NOVR's menu screens on the native menu canvas. It owns the focus among its buttons: pointing at a button moves the
 // focus there, the direction bindings move it to the nearest button that way, Select activates it and Back goes back.
 // The focus stays where it is when the pointer leaves, so switching between the cursor and the controls never loses it.
+// A list of settings can be given an order, which Up and Down follow (down one column and on into the next), while Left
+// and Right change the focused setting's value.
 internal abstract class MenuScreen
 {
     private const float FadeSeconds = 0.12f;
@@ -15,6 +17,7 @@ internal abstract class MenuScreen
     private readonly List<MenuButton> _buttons = new();
     private readonly CanvasGroup _group;
     private MenuButton? _focused;
+    private List<MenuButton>? _order;
     private bool _active;
 
     protected MenuScreen(RectTransform canvas, string name)
@@ -59,10 +62,10 @@ internal abstract class MenuScreen
         OnTick();
         if (MenuInput.IsRebinding) return;
 
-        if (MenuInput.Pressed(MenuCommand.Up)) Move(Vector2.up);
-        if (MenuInput.Pressed(MenuCommand.Down)) Move(Vector2.down);
-        if (MenuInput.Pressed(MenuCommand.Left)) Move(Vector2.left);
-        if (MenuInput.Pressed(MenuCommand.Right)) Move(Vector2.right);
+        if (MenuInput.Pressed(MenuCommand.Up)) Step(Vector2.up);
+        if (MenuInput.Pressed(MenuCommand.Down)) Step(Vector2.down);
+        if (MenuInput.Pressed(MenuCommand.Left)) Step(Vector2.left);
+        if (MenuInput.Pressed(MenuCommand.Right)) Step(Vector2.right);
         if (MenuInput.Pressed(MenuCommand.PreviousTab)) OnTab(-1);
         if (MenuInput.Pressed(MenuCommand.NextTab)) OnTab(1);
         if (MenuInput.Pressed(MenuCommand.Select) && _focused != null && Usable(_focused)) _focused.Activate();
@@ -76,14 +79,25 @@ internal abstract class MenuScreen
         return button;
     }
 
+    protected void Remove(MenuButton button)
+    {
+        _buttons.Remove(button);
+        if (_focused == button) _focused = null;
+    }
+
+    protected void SetOrder(List<MenuButton>? order) => _order = order;
+
+    protected MenuButton? Focused => _focused;
+
     protected void Focus(MenuButton? button, bool sound)
     {
         if (button == _focused) return;
 
-        _focused?.SetFocused(false);
+        if (_focused != null) _focused.SetFocused(false);
         _focused = button;
-        _focused?.SetFocused(true);
+        if (_focused != null) _focused.SetFocused(true);
         if (sound && button != null) MenuSounds.Move();
+        OnFocused(button);
     }
 
     protected virtual MenuButton? FirstFocus()
@@ -108,6 +122,10 @@ internal abstract class MenuScreen
     {
     }
 
+    protected virtual void OnFocused(MenuButton? button)
+    {
+    }
+
     // True when it went somewhere, for the sound.
     protected virtual bool OnBack() => false;
 
@@ -123,6 +141,35 @@ internal abstract class MenuScreen
 
         _active = false;
         Root.gameObject.SetActive(false);
+    }
+
+    private void Step(Vector2 direction)
+    {
+        if (_focused != null && Usable(_focused))
+        {
+            if (direction.x != 0f && _focused.Adjustable)
+            {
+                _focused.Adjust(direction.x > 0f ? 1 : -1);
+                return;
+            }
+
+            var index = direction.y != 0f && _order != null ? _order.IndexOf(_focused) : -1;
+            if (index >= 0)
+            {
+                var step = direction.y > 0f ? -1 : 1;
+                for (var next = index + step; next >= 0 && next < _order!.Count; next += step)
+                {
+                    if (!Usable(_order[next])) continue;
+
+                    Focus(_order[next], sound: true);
+                    return;
+                }
+
+                return;
+            }
+        }
+
+        Move(direction);
     }
 
     private void Move(Vector2 direction)

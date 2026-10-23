@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
-using System.Reflection;
 using System.Text;
 using HarmonyLib;
+using NOVR.VrUi.Native;
 using UnityEngine;
 using UnityEngine.Audio;
 using UnityEngine.Rendering;
@@ -12,41 +12,51 @@ using Random = UnityEngine.Random;
 
 namespace NOVR.VrUi.Menu;
 
-// Out of flight, the menus float inside one of the game's own aircraft shelters instead of over a flat picture: the shelter
-// and an aircraft it can hold, copied from the game's prefabs (VisualClone), at dusk, with its door rolling open when the
-// menu comes up and shut while a mission loads (LoadingScreenPatch). Outside, runway lights, and now and then the game's
-// aircraft flying past the field with their own engine sound. The player stands behind the parked aircraft, a little to
-// its left, facing the door, with the menu panel on the left clear of the aircraft and the walls.
-// Everything sits in the menu camera's tracking space, so it stays put around the player across the menu scenes and moves
-// with a recenter. Anything the game doesn't have (no shelter found, a shader missing) is left out, not faked.
+// Out of flight, the menus are in one of the game's own aircraft shelters instead of over a flat picture. The player sits
+// at a desk beside the parked aircraft, its wingtip just off to the right, facing the open door, with the main menu on a
+// briefing board in front (the menu is anchored to the seat while this is up, NativeVrUiRoot). The shelter, the aircraft,
+// the buildings and vehicles across the apron are copied from the game's prefabs (VisualClone); the desk and board, the
+// dusk sky, the hills and the airfield are made here. The door rolls open when the menu comes up and shut while a
+// mission loads (LoadingScreenPatch), and now and then the game's aircraft fly past the field with their engine sound.
+// Everything sits in the menu camera's tracking space, so it stays put around the player across the menu scenes and
+// moves with a recenter. Whatever the game doesn't have (a building, a shader) is left out.
 public class MenuEnvironment : NOVRBehaviour
 {
+    // Seated eye height above the floor.
     private const float EyeHeight = 1.3f;
-    private const float BehindTail = 3.5f;
+    // From the seat out to the aircraft's wingtip.
+    private const float SeatGap = 1.6f;
     private const float OpenDelaySeconds = 1.2f;
     private const float OpenSeconds = 7f;
     private const float CloseSeconds = 3f;
-    private const float SkyRadius = 3500f;
+    private const float SkyRadius = 3400f;
+    private const float HillsRadius = 2900f;
     private const float FarClip = 8000f;
-    private const float RunwayDistance = 620f;
+    private const float RunwayFromDoor = 560f;
     private const float FlybyMinSeconds = 25f;
     private const float FlybyMaxSeconds = 60f;
     private const float FlybyLength = 8000f;
+    private const int MaxFrameErrors = 3;
 
-    private const BindingFlags AnyInstance = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
     private static readonly string[] MenuScenes = { "MainMenu", "MultiplayerMenu", "MissionsMenu" };
-    // The game's empty loading scene, shown between a menu and a mission: the shelter stays, door shut.
-    private const string LoadingScene = "empty";
     private static readonly string[] ShelterWords = { "bunker", "shelter", "hardened", "has" };
     private static readonly string[] EngineWords = { "engine", "jet", "turbine", "exterior", "external", "distant", "far" };
+    private static readonly string[] VehicleWords = { "truck", "fuel", "tanker", "supply", "utility", "cargo", "transport", "jeep", "car", "van" };
 
     private static readonly Color SkyZenith = new(0.05f, 0.08f, 0.19f);
     private static readonly Color SkyHigh = new(0.2f, 0.25f, 0.42f);
-    private static readonly Color SkyHorizon = new(0.95f, 0.55f, 0.32f);
-    private static readonly Color SkyBelow = new(0.11f, 0.09f, 0.09f);
+    private static readonly Color SkyGlow = new(0.98f, 0.56f, 0.3f);
+    private static readonly Color SkyHorizon = new(0.48f, 0.4f, 0.48f);
+    private static readonly Color SkyBelow = new(0.09f, 0.08f, 0.09f);
+    private static readonly Color HillsColor = new(0.08f, 0.09f, 0.13f);
+    private static readonly Color SunDiscColor = new(1f, 0.86f, 0.62f);
     private static readonly Color Ambient = new(0.2f, 0.21f, 0.27f);
     private static readonly Color SunColor = new(1f, 0.6f, 0.38f);
-    private static readonly Color GroundColor = new(0.08f, 0.09f, 0.08f);
+    private static readonly Color GroundColor = new(0.07f, 0.08f, 0.06f);
+    private static readonly Color ConcreteColor = new(0.28f, 0.28f, 0.27f);
+    private static readonly Color AsphaltColor = new(0.06f, 0.06f, 0.065f);
+    // Light travels in from beyond the door, low, a little from the right: a sunset seen through the door.
+    private static readonly Quaternion SunRotation = Quaternion.Euler(7f, 205f, 0f);
 
     public static MenuEnvironment? I { get; private set; }
     public static string? FeaturedAircraft { get; private set; }
@@ -56,10 +66,15 @@ public class MenuEnvironment : NOVRBehaviour
     // Kept after their pass and flown again, so each aircraft type is copied at most once per wingman.
     private readonly Dictionary<AircraftDefinition, List<GameObject>> _flybyClones = new();
     private GameObject? _root;
+    private Transform? _site;
     private Transform? _shelter;
     private Transform? _spawn;
+    private Bounds _shelterBounds;
+    private float _insideHalfWidth = 10f;
     private AircraftDefinition[] _hangarAircraft = Array.Empty<AircraftDefinition>();
     private GameObject? _featured;
+    private Transform? _board;
+    private Transform? _boardLegs;
     private Light? _sun;
     private AudioSource? _doorLoop;
     private AudioSource? _doorOneShot;
@@ -70,9 +85,11 @@ public class MenuEnvironment : NOVRBehaviour
     private Material? _unlit;
     private Material? _lit;
     private bool _built;
-    private bool _failed;
+    private bool _buildFailed;
     private bool _visible;
     private bool _loading;
+    private int _frameErrors;
+    private int _pausedScene = -1;
     private float _openAt;
     private float _door;
     private bool _doorMovingNow;
@@ -81,6 +98,7 @@ public class MenuEnvironment : NOVRBehaviour
     private float _doorStartTime;
     private float _doorSeconds;
     private float _nextFlyby;
+    private float _doorZ;
     private Camera? _camera;
     private CameraState _cameraState;
     private int _lightingScene = -1;
@@ -109,6 +127,9 @@ public class MenuEnvironment : NOVRBehaviour
         public float FarClip;
     }
 
+    // Up and around the player; NativeVrUiRoot then anchors the menu to the seat.
+    public bool IsShowing => _visible;
+
     protected override void Awake()
     {
         base.Awake();
@@ -136,12 +157,11 @@ public class MenuEnvironment : NOVRBehaviour
 
     private void LateUpdate()
     {
+        var scene = SceneManager.GetActiveScene();
         try
         {
-            var scene = SceneManager.GetActiveScene();
-            var inMenu = Array.IndexOf(MenuScenes, scene.name) >= 0;
-            var wanted = !_failed && ModConfiguration.Instance.MenuHangar.Value && (inMenu || scene.name == LoadingScene) &&
-                         MainMenu.State == MainMenu.LoadingState.Loaded;
+            var wanted = !_buildFailed && scene.handle != _pausedScene && ModConfiguration.Instance.MenuHangar.Value &&
+                         Array.IndexOf(MenuScenes, scene.name) >= 0 && MainMenu.State == MainMenu.LoadingState.Loaded;
             var camera = wanted ? APIBus.MainCamera : null;
             if (camera == null)
             {
@@ -152,11 +172,11 @@ public class MenuEnvironment : NOVRBehaviour
             if (!_built) Build();
             if (_root == null) return;
 
-            if (!_visible) Arrive();
+            if (!_visible) Arrive(scene, camera);
             Follow(camera);
             if (scene.handle != _lightingScene) ApplyLighting(scene);
 
-            if (inMenu && !_loading && _openAt > 0f && Time.unscaledTime >= _openAt)
+            if (!_loading && _openAt > 0f && Time.unscaledTime >= _openAt)
             {
                 _openAt = 0f;
                 MoveDoor(1f, OpenSeconds);
@@ -164,34 +184,48 @@ public class MenuEnvironment : NOVRBehaviour
 
             UpdateDoor();
             UpdateFlybys();
+            UpdateBoard();
         }
         catch (Exception exception)
         {
-            _failed = true;
+            // Given up on for this scene; the next menu scene tries again.
+            _pausedScene = scene.handle;
             Hide();
-            NOVRPlugin.Log.LogWarning($"[NOVR] Menu hangar stopped: {exception}");
+            if (++_frameErrors <= MaxFrameErrors) NOVRPlugin.Log.LogWarning($"[NOVR] Menu hangar stopped in {scene.name}: {exception}");
         }
     }
 
     private void Build()
     {
         _built = true;
-        _root = new GameObject("NOVR Menu Hangar");
-        DontDestroyOnLoad(_root);
-        _root.SetActive(false);
+        try
+        {
+            _root = new GameObject("NOVR Menu Hangar");
+            DontDestroyOnLoad(_root);
+            _root.SetActive(false);
+            _site = new GameObject("Site").transform;
+            _site.SetParent(_root.transform, false);
 
-        _unlit = CreateMaterial("Universal Render Pipeline/Unlit");
-        _lit = CreateMaterial("Universal Render Pipeline/Lit");
-        BuildShelter();
-        BuildSky();
-        BuildGround();
-        BuildRunwayLights();
-        BuildSun();
-        LogSceneContentOnce();
+            _lit = CreateMaterial("Universal Render Pipeline/Lit");
+            _unlit = CreateMaterial("Sprites/Default") ?? CreateMaterial("Universal Render Pipeline/Particles/Unlit");
+            BuildShelter();
+            BuildSun();
+            BuildSky();
+            BuildOutside();
+            BuildDesk();
+            BuildBoard();
+        }
+        catch (Exception exception)
+        {
+            _buildFailed = true;
+            if (_root != null) Destroy(_root);
+            _root = null;
+            NOVRPlugin.Log.LogWarning($"[NOVR] Could not build the menu hangar: {exception}");
+        }
     }
 
     // Each time the menus come back: a new aircraft in the shelter, and the door shut, to open once the menu is up.
-    private void Arrive()
+    private void Arrive(Scene scene, Camera camera)
     {
         _visible = true;
         _root!.SetActive(true);
@@ -200,6 +234,8 @@ public class MenuEnvironment : NOVRBehaviour
         ApplyDoor(0f);
         _openAt = Time.unscaledTime + OpenDelaySeconds;
         _nextFlyby = Time.unscaledTime + Random.Range(8f, 20f);
+        NOVRPlugin.Log.LogInfo($"[NOVR] Menu hangar: shown in {scene.name} from '{camera.name}', which draws {CountSceneMeshes(scene)} meshes of its own; " +
+                               $"{FeaturedAircraft ?? "no aircraft"} parked.");
     }
 
     private void Hide()
@@ -208,13 +244,17 @@ public class MenuEnvironment : NOVRBehaviour
 
         _visible = false;
         RestoreCamera();
-        foreach (var flyby in _flybys) flyby.Clone.SetActive(false);
+        foreach (var flyby in _flybys)
+        {
+            if (flyby.Clone != null) flyby.Clone.SetActive(false);
+        }
+
         _flybys.Clear();
         if (_doorLoop != null) _doorLoop.Stop();
         if (_root != null) _root.SetActive(false);
     }
 
-    // The menu camera's parent is the tracking space: the headset moves the camera within it.
+    // The menu camera's parent is the tracking space: the headset moves the camera within it. Its origin is the seat.
     private void Follow(Camera camera)
     {
         var origin = camera.transform.parent;
@@ -266,6 +306,7 @@ public class MenuEnvironment : NOVRBehaviour
         if (_sun != null) RenderSettings.sun = _sun;
     }
 
+    // The shelter goes in the site frame: the game's aircraft spawn point at its origin, facing +Z out of the door.
     private void BuildShelter()
     {
         var encyclopedia = Encyclopedia.i;
@@ -279,6 +320,8 @@ public class MenuEnvironment : NOVRBehaviour
         {
             if (definition == null || definition.unitPrefab == null) continue;
 
+            if (candidates.Length > 0) candidates.Append(", ");
+            candidates.Append(definition.unitPrefab.name);
             var hangar = definition.unitPrefab.GetComponentInChildren<Hangar>(true);
             if (hangar == null) continue;
 
@@ -290,8 +333,6 @@ public class MenuEnvironment : NOVRBehaviour
                 if (name.Contains(word)) score += 20;
             }
 
-            if (candidates.Length > 0) candidates.Append(", ");
-            candidates.Append($"{definition.unitPrefab.name} ({doors} doors)");
             if (score <= bestScore) continue;
 
             best = definition;
@@ -301,17 +342,23 @@ public class MenuEnvironment : NOVRBehaviour
 
         if (best == null || bestHangar == null)
         {
-            NOVRPlugin.Log.LogInfo("[NOVR] Menu hangar: the game has no hangar building to use; sky and flybys only.");
+            NOVRPlugin.Log.LogInfo($"[NOVR] Menu hangar: no hangar among the game's buildings ({candidates}); outside only.");
             return;
         }
 
         var map = new Dictionary<Transform, Transform>();
-        _shelter = VisualClone.Create(best.unitPrefab, _root!.transform, map).transform;
+        _shelter = VisualClone.Create(best.unitPrefab, _site!, map).transform;
         _hangarAircraft = GetField<AircraftDefinition[]>(bestHangar, "availableAircraft") ?? Array.Empty<AircraftDefinition>();
 
         var spawn = GetField<Transform>(bestHangar, "spawnTransform");
         if (spawn == null || !map.TryGetValue(spawn, out _spawn)) map.TryGetValue(bestHangar.transform, out _spawn);
         _spawn ??= _shelter;
+
+        var spawnRotation = Quaternion.Inverse(_shelter.rotation) * _spawn.rotation;
+        var turn = Quaternion.Euler(0f, -spawnRotation.eulerAngles.y, 0f);
+        var spawnInShelter = _shelter.InverseTransformPoint(_spawn.position);
+        _shelter.localRotation = turn;
+        _shelter.localPosition = -(turn * spawnInShelter);
 
         foreach (var door in GetField<HangarDoor[]>(bestHangar, "doors") ?? Array.Empty<HangarDoor>())
         {
@@ -338,8 +385,16 @@ public class MenuEnvironment : NOVRBehaviour
                 copiedRenderer.enabled = true;
         }
 
+        // The inside, roughly: the whole extent less walls and banks.
+        if (TryGetBounds(_shelter.gameObject, _site!, out _shelterBounds))
+        {
+            _insideHalfWidth = Mathf.Min(-_shelterBounds.min.x, _shelterBounds.max.x) * 0.7f;
+            _doorZ = _shelterBounds.max.z;
+        }
+
         BuildDoorSound(bestHangar);
-        NOVRPlugin.Log.LogInfo($"[NOVR] Menu hangar: using {best.unitPrefab.name} ({_doors.Count} doors, {_hangarAircraft.Length} aircraft types) of {candidates}.");
+        NOVRPlugin.Log.LogInfo($"[NOVR] Menu hangar: using {best.unitPrefab.name} ({_doors.Count} doors, {_hangarAircraft.Length} aircraft types, " +
+                               $"{_shelterBounds.size.x:0}x{_shelterBounds.size.z:0} m); buildings: {candidates}.");
     }
 
     private void BuildDoorSound(Hangar hangar)
@@ -358,57 +413,47 @@ public class MenuEnvironment : NOVRBehaviour
         _doorOneShot = AddSource(owner, loop: false, minDistance: 8f, maxDistance: 150f);
     }
 
-    // The aircraft stands where the game spawns one in this hangar, and the shelter is placed around the player from it.
+    // A new aircraft each time, at the game's spawn point; the site is then moved so the seat is beside it.
     private void PlaceFeaturedAircraft()
     {
         if (_featured != null) Destroy(_featured);
         _featured = null;
         FeaturedAircraft = null;
-        if (_shelter == null || _spawn == null) return;
+        if (_site == null) return;
 
-        var choices = new List<AircraftDefinition>();
-        foreach (var definition in _hangarAircraft.Length > 0 ? _hangarAircraft : Encyclopedia.i.aircraft.ToArray())
-        {
-            if (definition != null && definition.unitPrefab != null) choices.Add(definition);
-        }
-
-        // Laid out with the shelter at rest, then turned and moved around the player.
-        _shelter.localPosition = Vector3.zero;
-        _shelter.localRotation = Quaternion.identity;
         var halfSpan = 6f;
+        var nose = 8f;
         var tail = 8f;
-        if (choices.Count > 0)
+        var aircraft = PickAircraft(_hangarAircraft);
+        if (aircraft != null && _spawn != null)
         {
-            var aircraft = choices[Random.Range(0, choices.Count)];
             _featured = VisualClone.Create(aircraft.unitPrefab, _spawn);
             _featured.transform.localPosition = Vector3.up * aircraft.spawnOffset.y + Vector3.forward * aircraft.spawnOffset.z;
             _featured.transform.localRotation = Quaternion.Euler(aircraft.restRotation);
             FeaturedAircraft = aircraft.unitName;
-            if (TryGetBounds(_featured, _spawn, out var bounds))
+            if (TryGetBounds(_featured, _site, out var bounds))
             {
                 halfSpan = Mathf.Max(-bounds.min.x, bounds.max.x);
+                nose = bounds.max.z;
                 tail = -bounds.min.z;
             }
         }
 
-        // The shelter's inside, roughly: its whole extent less walls and banks. The player stands BehindTail behind the
-        // aircraft, unless the back wall is nearer than that.
-        var haveShelter = TryGetBounds(_shelter.gameObject, _spawn, out var shelter);
-        var insideHalfWidth = haveShelter ? Mathf.Max(halfSpan + 2f, Mathf.Min(-shelter.min.x, shelter.max.x) * 0.7f) : halfSpan + 4f;
-        var back = haveShelter ? shelter.min.z * 0.85f + 1.5f : float.NegativeInfinity;
-        var playerZ = -(tail + BehindTail);
-        if (playerZ < back) playerZ = Mathf.Min(back, -tail - 1f);
-        var player = new Vector3(-Mathf.Clamp(halfSpan * 0.6f, 2f, Mathf.Max(2f, insideHalfWidth - 2.5f)), 0f, playerZ);
+        // Level with the middle of the aircraft, a little forward, off its left wingtip, kept clear of the wall.
+        var seat = new Vector3(-Mathf.Min(halfSpan + SeatGap, Mathf.Max(2f, _insideHalfWidth - 1.5f)), EyeHeight, Mathf.Lerp(-tail, nose, 0.55f));
+        _site.localRotation = Quaternion.identity;
+        _site.localPosition = -seat;
+    }
 
-        var spawnYaw = Quaternion.Inverse(_shelter.rotation) * _spawn.rotation;
-        var turn = Quaternion.Euler(0f, -spawnYaw.eulerAngles.y, 0f);
-        var spawnInShelter = _shelter.InverseTransformPoint(_spawn.position);
-        var spawnFromPlayer = new Vector3(-player.x, -EyeHeight, -player.z);
-        _shelter.localRotation = turn;
-        _shelter.localPosition = spawnFromPlayer - turn * spawnInShelter;
+    private AircraftDefinition? PickAircraft(AircraftDefinition[] preferred)
+    {
+        var choices = new List<AircraftDefinition>();
+        foreach (var definition in preferred.Length > 0 ? preferred : Encyclopedia.i.aircraft.ToArray())
+        {
+            if (definition != null && definition.unitPrefab != null) choices.Add(definition);
+        }
 
-        NOVRPlugin.Log.LogInfo($"[NOVR] Menu hangar: {FeaturedAircraft ?? "no aircraft"} parked; half span {halfSpan:0.0} m, tail {tail:0.0} m, " +
-                               $"shelter {shelter.size.x:0}x{shelter.size.z:0}x{shelter.size.y:0} m, player at {player.x:0.0}, {player.z:0.0} m from the spawn point.");
+        return choices.Count > 0 ? choices[Random.Range(0, choices.Count)] : null;
     }
 
     // Bounds of everything drawn under root, in space's frame.
@@ -474,121 +519,293 @@ public class MenuEnvironment : NOVRBehaviour
         }
     }
 
-    private void BuildSky()
-    {
-        if (_unlit == null) return;
-
-        var sky = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-        Destroy(sky.GetComponent<Collider>());
-        sky.name = "Sky";
-        sky.transform.SetParent(_root!.transform, false);
-        sky.transform.localScale = Vector3.one * SkyRadius * 2f;
-        var renderer = sky.GetComponent<MeshRenderer>();
-        renderer.shadowCastingMode = ShadowCastingMode.Off;
-        renderer.receiveShadows = false;
-
-        // A sphere's texture runs from its bottom (0) to its top (1); its middle is the horizon.
-        var texture = new Texture2D(1, 256, TextureFormat.RGBA32, false) { wrapMode = TextureWrapMode.Clamp };
-        for (var y = 0; y < 256; y++)
-        {
-            var height = (y / 255f - 0.5f) * 2f;
-            var color = height < 0f
-                ? Color.Lerp(SkyHorizon * 0.6f, SkyBelow, Mathf.Clamp01(-height * 12f))
-                : height < 0.12f
-                    ? Color.Lerp(SkyHorizon, SkyHigh, height / 0.12f)
-                    : Color.Lerp(SkyHigh, SkyZenith, (height - 0.12f) / 0.88f);
-            texture.SetPixel(0, y, color);
-        }
-
-        texture.Apply();
-        var material = new Material(_unlit);
-        material.SetTexture("_BaseMap", texture);
-        material.SetColor("_BaseColor", Color.white);
-        // Seen from inside.
-        material.SetFloat("_Cull", 0f);
-        renderer.sharedMaterial = material;
-    }
-
-    private void BuildGround()
-    {
-        var ground = GameObject.CreatePrimitive(PrimitiveType.Plane);
-        Destroy(ground.GetComponent<Collider>());
-        ground.name = "Ground";
-        ground.transform.SetParent(_root!.transform, false);
-        // Just under the shelter floor, so the two don't flicker where they meet.
-        ground.transform.localPosition = new Vector3(0f, -EyeHeight - 0.03f, 0f);
-        ground.transform.localScale = new Vector3(SkyRadius / 5f, 1f, SkyRadius / 5f);
-        var material = _lit != null ? new Material(_lit) : _unlit != null ? new Material(_unlit) : null;
-        if (material == null)
-        {
-            Destroy(ground);
-            return;
-        }
-
-        material.SetColor("_BaseColor", _lit != null ? GroundColor : GroundColor * 0.6f);
-        if (_lit != null) material.SetFloat("_Smoothness", 0.15f);
-        ground.GetComponent<MeshRenderer>().sharedMaterial = material;
-    }
-
-    // Edge lights along a runway crossing in front of the door, and blue taxiway lights out to it.
-    private void BuildRunwayLights()
-    {
-        if (_unlit == null) return;
-
-        var runway = new Material(_unlit);
-        runway.SetColor("_BaseColor", new Color(1f, 0.88f, 0.66f));
-        var taxiway = new Material(_unlit);
-        taxiway.SetColor("_BaseColor", new Color(0.3f, 0.45f, 1f));
-        var lights = new GameObject("Field Lights").transform;
-        lights.SetParent(_root!.transform, false);
-
-        var y = -EyeHeight + 0.4f;
-        for (var x = -2400f; x <= 2400f; x += 60f)
-        {
-            AddLight(lights, runway, new Vector3(x, y, RunwayDistance - 25f), 1.6f);
-            AddLight(lights, runway, new Vector3(x, y, RunwayDistance + 25f), 1.6f);
-        }
-
-        for (var z = 40f; z < RunwayDistance - 40f; z += 30f)
-        {
-            AddLight(lights, taxiway, new Vector3(-12f, y, z), 0.8f);
-            AddLight(lights, taxiway, new Vector3(12f, y, z), 0.8f);
-        }
-    }
-
-    private static void AddLight(Transform parent, Material material, Vector3 position, float size)
-    {
-        var light = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-        Destroy(light.GetComponent<Collider>());
-        light.transform.SetParent(parent, false);
-        light.transform.localPosition = position;
-        light.transform.localScale = Vector3.one * size;
-        var renderer = light.GetComponent<MeshRenderer>();
-        renderer.sharedMaterial = material;
-        renderer.shadowCastingMode = ShadowCastingMode.Off;
-    }
-
-    // Low and out beyond the door, so it reaches in across the floor.
     private void BuildSun()
     {
         var sun = new GameObject("Sun");
         sun.transform.SetParent(_root!.transform, false);
-        sun.transform.localRotation = Quaternion.Euler(7f, 205f, 0f);
+        sun.transform.localRotation = SunRotation;
         _sun = sun.AddComponent<Light>();
         _sun.type = LightType.Directional;
         _sun.color = SunColor;
         _sun.intensity = 1.6f;
         _sun.shadows = LightShadows.Soft;
 
-        var fill = new GameObject("Shelter Fill");
-        fill.transform.SetParent(_root.transform, false);
-        fill.transform.localPosition = new Vector3(3f, 4f, 6f);
-        var light = fill.AddComponent<Light>();
-        light.type = LightType.Point;
-        light.color = new Color(1f, 0.9f, 0.76f);
-        light.intensity = 1.5f;
-        light.range = 30f;
-        light.shadows = LightShadows.None;
+        // Work lights over the aircraft, as the shelter's own may be few.
+        AddPointLight(_site!, "Work Light", new Vector3(0f, 7f, 0f), new Color(1f, 0.92f, 0.8f), 1.3f, 26f);
+    }
+
+    // A dome shaded from the sunset glow to night overhead, the sun, and a ring of dark hills, all unlit and drawn
+    // behind everything else.
+    private void BuildSky()
+    {
+        if (_unlit == null) return;
+
+        var toSun = -(SunRotation * Vector3.forward);
+        AddMesh(_root!.transform, "Sky", SkyMesh(toSun), UnlitMaterial(Color.white, 2980), Vector3.zero, SkyRadius);
+
+        var disc = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        Destroy(disc.GetComponent<Collider>());
+        disc.name = "Sun Disc";
+        disc.transform.SetParent(_root.transform, false);
+        disc.transform.localPosition = toSun * (SkyRadius - 200f);
+        disc.transform.localScale = Vector3.one * 90f;
+        SetupRenderer(disc.GetComponent<MeshRenderer>(), UnlitMaterial(SunDiscColor, 2981));
+
+        AddMesh(_root.transform, "Hills", HillsMesh(toSun), UnlitMaterial(Color.white, 2990), Vector3.zero, 1f);
+    }
+
+    private static Mesh SkyMesh(Vector3 toSun)
+    {
+        const int segments = 48;
+        const int rings = 24;
+        var vertices = new List<Vector3>();
+        var colors = new List<Color>();
+        var triangles = new List<int>();
+        for (var ring = 0; ring <= rings; ring++)
+        {
+            var elevation = Mathf.Lerp(-90f, 90f, ring / (float)rings) * Mathf.Deg2Rad;
+            for (var segment = 0; segment <= segments; segment++)
+            {
+                var azimuth = segment / (float)segments * Mathf.PI * 2f;
+                var direction = new Vector3(Mathf.Cos(elevation) * Mathf.Sin(azimuth), Mathf.Sin(elevation), Mathf.Cos(elevation) * Mathf.Cos(azimuth));
+                vertices.Add(direction);
+                colors.Add(Linear(SkyColor(direction, toSun)));
+            }
+        }
+
+        for (var ring = 0; ring < rings; ring++)
+        {
+            for (var segment = 0; segment < segments; segment++)
+            {
+                var a = ring * (segments + 1) + segment;
+                var b = a + segments + 1;
+                triangles.AddRange(new[] { a, b, a + 1, a + 1, b, b + 1 });
+            }
+        }
+
+        return CreateMesh("NOVR Sky", vertices, colors, triangles);
+    }
+
+    private static Color SkyColor(Vector3 direction, Vector3 toSun)
+    {
+        var height = direction.y;
+        if (height < 0f) return Color.Lerp(SkyHorizon * 0.5f, SkyBelow, Mathf.Clamp01(-height * 8f));
+
+        // Toward the sun the horizon glows; away from it, it is the dusky violet of the far side.
+        var flat = new Vector3(direction.x, 0f, direction.z).normalized;
+        var facing = Mathf.Clamp01((Vector3.Dot(flat, new Vector3(toSun.x, 0f, toSun.z).normalized) + 1f) * 0.5f);
+        var horizon = Color.Lerp(SkyHorizon, SkyGlow, Mathf.Pow(facing, 3f));
+        var low = Color.Lerp(horizon, SkyHigh, Mathf.Clamp01(height / Mathf.Lerp(0.12f, 0.3f, Mathf.Pow(facing, 4f))));
+        var color = Color.Lerp(low, SkyZenith, Mathf.Clamp01((height - 0.2f) / 0.8f));
+        // A halo close around the sun.
+        var halo = Mathf.Pow(Mathf.Clamp01(Vector3.Dot(direction, toSun)), 24f);
+        return Color.Lerp(color, SkyGlow * 1.15f, halo * 0.8f);
+    }
+
+    private static Mesh HillsMesh(Vector3 toSun)
+    {
+        const int segments = 160;
+        var vertices = new List<Vector3>();
+        var colors = new List<Color>();
+        var triangles = new List<int>();
+        var flatSun = new Vector3(toSun.x, 0f, toSun.z).normalized;
+        for (var segment = 0; segment <= segments; segment++)
+        {
+            var azimuth = segment / (float)segments * Mathf.PI * 2f;
+            var direction = new Vector3(Mathf.Sin(azimuth), 0f, Mathf.Cos(azimuth));
+            // Ridges of a few overlapping sizes, lower toward the sun so the sunset shows over them.
+            var ridge = 0.5f + 0.25f * Mathf.Sin(azimuth * 3f + 1.3f) + 0.15f * Mathf.Sin(azimuth * 7f + 0.4f) + 0.1f * Mathf.Sin(azimuth * 17f + 2.1f);
+            var towardSun = Mathf.Clamp01(Vector3.Dot(direction, flatSun));
+            var height = Mathf.Lerp(60f, 300f, ridge) * (1f - 0.6f * towardSun * towardSun);
+            vertices.Add(direction * HillsRadius + Vector3.down * 80f);
+            vertices.Add(direction * HillsRadius + Vector3.up * height);
+            var shade = Linear(Color.Lerp(HillsColor, SkyHorizon * 0.45f, 0.35f * towardSun));
+            colors.Add(Linear(HillsColor * 0.7f));
+            colors.Add(shade);
+        }
+
+        for (var segment = 0; segment < segments; segment++)
+        {
+            var a = segment * 2;
+            triangles.AddRange(new[] { a, a + 1, a + 2, a + 2, a + 1, a + 3 });
+        }
+
+        return CreateMesh("NOVR Hills", vertices, colors, triangles);
+    }
+
+    // The ground, the apron in front of the door, a runway across the view with its edge lights, blue taxiway lights out to
+    // it, and some of the game's other buildings and vehicles about the field.
+    private void BuildOutside()
+    {
+        var outside = new GameObject("Outside").transform;
+        outside.SetParent(_site!, false);
+
+        // Slabs whose tops are far enough apart that the distant ones don't flicker against each other: the ground 30 cm
+        // under the shelter floor, the apron and taxiway just under it, the runway just over the ground.
+        if (_lit != null)
+        {
+            AddBox(outside, "Ground", new Vector3(0f, -0.8f, 0f), new Vector3(SkyRadius * 2f, 1f, SkyRadius * 2f), GroundColor, 0.1f);
+            AddBox(outside, "Apron", new Vector3(0f, -0.54f, _doorZ + 55f), new Vector3(80f, 1f, 120f), ConcreteColor, 0.2f);
+            var taxiwayLength = RunwayFromDoor - 115f;
+            AddBox(outside, "Taxiway", new Vector3(0f, -0.56f, _doorZ + 115f + taxiwayLength / 2f), new Vector3(24f, 1f, taxiwayLength), AsphaltColor, 0.25f);
+            AddBox(outside, "Runway", new Vector3(0f, -0.48f, _doorZ + RunwayFromDoor + 30f), new Vector3(5000f, 1f, 50f), AsphaltColor, 0.25f);
+        }
+
+        if (_unlit != null)
+        {
+            var runwayLight = UnlitMaterial(new Color(1f, 0.88f, 0.66f), 3000);
+            var taxiwayLight = UnlitMaterial(new Color(0.3f, 0.45f, 1f), 3000);
+            for (var x = -2400f; x <= 2400f; x += 60f)
+            {
+                AddLightBulb(outside, runwayLight, new Vector3(x, 0.2f, _doorZ + RunwayFromDoor + 4f), 1.6f);
+                AddLightBulb(outside, runwayLight, new Vector3(x, 0.2f, _doorZ + RunwayFromDoor + 56f), 1.6f);
+            }
+
+            for (var z = _doorZ + 120f; z < _doorZ + RunwayFromDoor - 10f; z += 30f)
+            {
+                AddLightBulb(outside, taxiwayLight, new Vector3(-13f, 0.2f, z), 0.8f);
+                AddLightBulb(outside, taxiwayLight, new Vector3(13f, 0.2f, z), 0.8f);
+            }
+        }
+
+        // Across the apron, facing back toward the shelter, on the ground.
+        PlaceBuilding(outside, new[] { "hangar_med", "hangar" }, new Vector3(-75f, -0.3f, _doorZ + 170f), 165f, park: false);
+        PlaceBuilding(outside, new[] { "revetment" }, new Vector3(55f, -0.3f, _doorZ + 125f), 195f, park: true);
+        PlaceBuilding(outside, new[] { "shelter" }, new Vector3(150f, -0.3f, _doorZ + 215f), 185f, park: false);
+        PlaceBuilding(outside, new[] { "helipad" }, new Vector3(-160f, -0.3f, _doorZ + 70f), 150f, park: false);
+        PlaceVehicles(outside);
+    }
+
+    private void PlaceBuilding(Transform parent, string[] words, Vector3 position, float yaw, bool park)
+    {
+        var buildings = Encyclopedia.i.buildings;
+        if (buildings == null) return;
+
+        foreach (var word in words)
+        {
+            foreach (var definition in buildings)
+            {
+                if (definition == null || definition.unitPrefab == null || !definition.unitPrefab.name.ToLowerInvariant().Contains(word)) continue;
+
+                var building = VisualClone.Create(definition.unitPrefab, parent);
+                building.transform.localPosition = position;
+                building.transform.localRotation = Quaternion.Euler(0f, yaw, 0f);
+                if (park && PickAircraft(_hangarAircraft) is { } aircraft)
+                {
+                    var parked = VisualClone.Create(aircraft.unitPrefab, building.transform);
+                    parked.transform.localPosition = Vector3.up * aircraft.spawnOffset.y;
+                    parked.transform.localRotation = Quaternion.Euler(aircraft.restRotation);
+                }
+
+                return;
+            }
+        }
+    }
+
+    private void PlaceVehicles(Transform parent)
+    {
+        var vehicles = Encyclopedia.i.vehicles;
+        if (vehicles == null) return;
+
+        var names = new StringBuilder();
+        var picked = new List<VehicleDefinition>();
+        foreach (var definition in vehicles)
+        {
+            if (definition == null || definition.unitPrefab == null) continue;
+
+            if (names.Length > 0) names.Append(", ");
+            names.Append(definition.unitPrefab.name);
+            var name = $"{definition.unitName} {definition.unitPrefab.name}".ToLowerInvariant();
+            if (definition.length > 14f || picked.Count >= 2) continue;
+
+            foreach (var word in VehicleWords)
+            {
+                if (!name.Contains(word)) continue;
+
+                picked.Add(definition);
+                break;
+            }
+        }
+
+        var spots = new[] { (new Vector3(16f, 0f, _doorZ + 22f), 250f), (new Vector3(-38f, 0f, _doorZ + 100f), 170f) };
+        for (var index = 0; index < picked.Count; index++)
+        {
+            var vehicle = VisualClone.Create(picked[index].unitPrefab, parent);
+            vehicle.transform.localPosition = spots[index].Item1 + Vector3.up * picked[index].spawnOffset.y;
+            vehicle.transform.localRotation = Quaternion.Euler(0f, spots[index].Item2, 0f);
+        }
+
+        NOVRPlugin.Log.LogInfo($"[NOVR] Menu hangar: {picked.Count} vehicles out on the apron, of {names}.");
+    }
+
+    // A desk in front of the seat, with a lamp, papers, a clipboard and a mug. The seat is the root's origin and the
+    // floor EyeHeight below it.
+    private void BuildDesk()
+    {
+        if (_lit == null) return;
+
+        var desk = new GameObject("Desk").transform;
+        desk.SetParent(_root!.transform, false);
+        desk.localPosition = new Vector3(0f, -EyeHeight, 0.78f);
+
+        var wood = new Color(0.24f, 0.16f, 0.1f);
+        var steel = new Color(0.3f, 0.31f, 0.33f);
+        const float top = 0.74f;
+        AddBox(desk, "Top", new Vector3(0f, top - 0.02f, 0f), new Vector3(1.3f, 0.04f, 0.62f), wood, 0.35f);
+        foreach (var x in new[] { -0.6f, 0.6f })
+        {
+            foreach (var z in new[] { -0.26f, 0.26f })
+            {
+                AddBox(desk, "Leg", new Vector3(x, (top - 0.04f) / 2f, z), new Vector3(0.05f, top - 0.04f, 0.05f), steel, 0.5f);
+            }
+        }
+
+        AddBox(desk, "Back Panel", new Vector3(0f, 0.42f, 0.28f), new Vector3(1.2f, 0.5f, 0.02f), steel * 0.8f, 0.4f);
+        AddBox(desk, "Paper", new Vector3(-0.18f, top + 0.001f, -0.02f), new Vector3(0.21f, 0.002f, 0.297f), new Color(0.85f, 0.84f, 0.78f), 0.1f, 8f);
+        AddBox(desk, "Paper", new Vector3(-0.02f, top + 0.003f, 0.06f), new Vector3(0.21f, 0.002f, 0.297f), new Color(0.82f, 0.82f, 0.77f), 0.1f, -5f);
+        AddBox(desk, "Clipboard", new Vector3(-0.45f, top + 0.005f, -0.05f), new Vector3(0.23f, 0.01f, 0.32f), new Color(0.35f, 0.24f, 0.14f), 0.3f, 12f);
+        AddCylinder(desk, "Mug", new Vector3(0.22f, top + 0.05f, -0.12f), 0.085f, 0.1f, new Color(0.55f, 0.12f, 0.1f));
+
+        // A low green-shaded lamp on the right-hand corner, below where the menus reach, its warm light on the desk.
+        AddCylinder(desk, "Lamp Base", new Vector3(0.52f, top + 0.01f, 0.16f), 0.14f, 0.02f, steel);
+        AddCylinder(desk, "Lamp Stem", new Vector3(0.52f, top + 0.12f, 0.16f), 0.02f, 0.22f, steel);
+        AddBox(desk, "Lamp Shade", new Vector3(0.52f, top + 0.24f, 0.12f), new Vector3(0.24f, 0.06f, 0.11f), new Color(0.08f, 0.24f, 0.14f), 0.6f);
+        AddPointLight(desk, "Lamp Light", new Vector3(0.52f, top + 0.18f, 0.1f), new Color(1f, 0.82f, 0.6f), 1.2f, 2.2f);
+    }
+
+    // A briefing board behind the main menu's panel; UpdateBoard keeps it there as the menu's size and distance change.
+    private void BuildBoard()
+    {
+        if (_lit == null) return;
+
+        _board = AddBox(_root!.transform, "Board", Vector3.zero, Vector3.one, new Color(0.07f, 0.08f, 0.09f), 0.3f).transform;
+        _boardLegs = new GameObject("Board Legs").transform;
+        _boardLegs.SetParent(_root.transform, false);
+        var steel = new Color(0.3f, 0.31f, 0.33f);
+        foreach (var side in new[] { -0.5f, 0.5f })
+        {
+            AddBox(_boardLegs, "Leg", new Vector3(side, 0.5f, 0f), new Vector3(0.04f, 1f, 0.04f), steel, 0.5f);
+            AddBox(_boardLegs, "Foot", new Vector3(side, 0.01f, 0f), new Vector3(0.06f, 0.02f, 0.6f), steel, 0.5f);
+        }
+    }
+
+    private void UpdateBoard()
+    {
+        if (_board == null || _boardLegs == null) return;
+
+        var unit = NativeVrUiRoot.CanvasUnitMeters;
+        var center = new Vector3(MainMenuScreen.RailCenter.x * unit, NativeVrUiRoot.MenuHeightOffset + MainMenuScreen.RailCenter.y * unit,
+            NativeVrUiRoot.MenuDistance + 0.06f);
+        var size = (MainMenuScreen.RailSize + new Vector2(50f, 50f)) * unit;
+        _board.localPosition = center;
+        _board.localScale = new Vector3(size.x, size.y, 0.04f);
+
+        // Legs from the floor to the board's lower edge, inset from its sides.
+        var bottom = center.y - size.y / 2f;
+        var legHeight = bottom + EyeHeight;
+        _boardLegs.gameObject.SetActive(legHeight > 0.02f);
+        _boardLegs.localPosition = new Vector3(center.x, -EyeHeight, center.z + 0.03f);
+        _boardLegs.localScale = new Vector3(size.x - 0.2f, Mathf.Max(0.02f, legHeight), 1f);
     }
 
     private void UpdateFlybys()
@@ -618,7 +835,7 @@ public class MenuEnvironment : NOVRBehaviour
 
         var side = Random.value < 0.5f ? -1f : 1f;
         var speed = Random.Range(140f, 230f);
-        var start = new Vector3(-side * FlybyLength / 2f, Random.Range(90f, 240f), RunwayDistance + Random.Range(-120f, 300f));
+        var start = new Vector3(-side * FlybyLength / 2f, Random.Range(90f, 240f), _doorZ + RunwayFromDoor + Random.Range(-120f, 300f));
         var velocity = new Vector3(side * speed, 0f, 0f);
         Launch(definition, start, velocity, FlybyLength / speed);
         // Sometimes a pair, the wingman back and out to the side.
@@ -631,7 +848,7 @@ public class MenuEnvironment : NOVRBehaviour
         var clone = clones.Find(cached => cached != null && !cached.activeSelf);
         if (clone == null)
         {
-            clone = VisualClone.Create(definition.unitPrefab, _root!.transform);
+            clone = VisualClone.Create(definition.unitPrefab, _site!);
             clone.name = $"Flyby {definition.unitName}";
             AddEngineSound(clone, definition.unitPrefab);
             clones.Add(clone);
@@ -697,6 +914,104 @@ public class MenuEnvironment : NOVRBehaviour
         return sound != null ? sound.EffectsMixer : null;
     }
 
+    private GameObject AddBox(Transform parent, string name, Vector3 position, Vector3 size, Color color, float smoothness, float yaw = 0f)
+    {
+        var box = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        Destroy(box.GetComponent<Collider>());
+        box.name = name;
+        box.transform.SetParent(parent, false);
+        box.transform.localPosition = position;
+        box.transform.localRotation = Quaternion.Euler(0f, yaw, 0f);
+        box.transform.localScale = size;
+        box.GetComponent<MeshRenderer>().sharedMaterial = LitMaterial(color, smoothness);
+        return box;
+    }
+
+    private void AddCylinder(Transform parent, string name, Vector3 position, float diameter, float height, Color color)
+    {
+        var cylinder = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+        Destroy(cylinder.GetComponent<Collider>());
+        cylinder.name = name;
+        cylinder.transform.SetParent(parent, false);
+        cylinder.transform.localPosition = position;
+        // Unity's cylinder is two units tall and one across.
+        cylinder.transform.localScale = new Vector3(diameter, height / 2f, diameter);
+        cylinder.GetComponent<MeshRenderer>().sharedMaterial = LitMaterial(color, 0.4f);
+    }
+
+    private static void AddPointLight(Transform parent, string name, Vector3 position, Color color, float intensity, float range)
+    {
+        var owner = new GameObject(name);
+        owner.transform.SetParent(parent, false);
+        owner.transform.localPosition = position;
+        var light = owner.AddComponent<Light>();
+        light.type = LightType.Point;
+        light.color = color;
+        light.intensity = intensity;
+        light.range = range;
+        light.shadows = LightShadows.None;
+    }
+
+    private static void AddLightBulb(Transform parent, Material material, Vector3 position, float size)
+    {
+        var bulb = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        Destroy(bulb.GetComponent<Collider>());
+        bulb.transform.SetParent(parent, false);
+        bulb.transform.localPosition = position;
+        bulb.transform.localScale = Vector3.one * size;
+        SetupRenderer(bulb.GetComponent<MeshRenderer>(), material);
+    }
+
+    private static void AddMesh(Transform parent, string name, Mesh mesh, Material material, Vector3 position, float scale)
+    {
+        var owner = new GameObject(name);
+        owner.transform.SetParent(parent, false);
+        owner.transform.localPosition = position;
+        owner.transform.localScale = Vector3.one * scale;
+        owner.AddComponent<MeshFilter>().sharedMesh = mesh;
+        SetupRenderer(owner.AddComponent<MeshRenderer>(), material);
+    }
+
+    private static void SetupRenderer(MeshRenderer renderer, Material material)
+    {
+        renderer.sharedMaterial = material;
+        renderer.shadowCastingMode = ShadowCastingMode.Off;
+        renderer.receiveShadows = false;
+    }
+
+    private static Mesh CreateMesh(string name, List<Vector3> vertices, List<Color> colors, List<int> triangles)
+    {
+        var mesh = new Mesh { name = name };
+        mesh.SetVertices(vertices);
+        mesh.SetColors(colors);
+        mesh.SetTriangles(triangles, 0);
+        // Seen from anywhere inside, so never culled for being off to one side.
+        mesh.bounds = new Bounds(Vector3.zero, Vector3.one * SkyRadius * 4f);
+        return mesh;
+    }
+
+    private Material LitMaterial(Color color, float smoothness)
+    {
+        var material = new Material(_lit!);
+        material.SetColor("_BaseColor", color);
+        material.SetFloat("_Smoothness", smoothness);
+        return material;
+    }
+
+    // Unlit and vertex coloured (Sprites/Default, which nearly every Unity game has, else the game's particle shader), drawn
+    // in this order after the opaque scene, from both sides.
+    private Material UnlitMaterial(Color color, int queue)
+    {
+        var material = new Material(_unlit!) { renderQueue = queue };
+        material.SetColor("_Color", color);
+        material.SetColor("_BaseColor", color);
+        material.SetFloat("_Cull", 0f);
+        return material;
+    }
+
+    // Vertex colours go to the shader as they are, so in a linear-colour game they are converted here.
+    private static Color Linear(Color color) => QualitySettings.activeColorSpace == ColorSpace.Linear ? color.linear : color;
+
     private static Material? CreateMaterial(string shaderName)
     {
         var shader = Shader.Find(shaderName);
@@ -706,18 +1021,16 @@ public class MenuEnvironment : NOVRBehaviour
         return null;
     }
 
-    // Whether the menu scene has a 3D scene of its own around the camera, which the shelter would then overlap.
-    private static void LogSceneContentOnce()
+    // Whether the menu scene has a 3D scene of its own, which the shelter would then overlap.
+    private static int CountSceneMeshes(Scene scene)
     {
         var count = 0;
         foreach (var renderer in Object.FindObjectsOfType<MeshRenderer>())
         {
-            if (renderer.gameObject.scene == SceneManager.GetActiveScene()) count++;
+            if (renderer.gameObject.scene == scene) count++;
         }
 
-        var camera = APIBus.MainCamera;
-        var origin = camera != null && camera.transform.parent != null ? camera.transform.parent.name : "none";
-        NOVRPlugin.Log.LogInfo($"[NOVR] Menu hangar: the menu scene draws {count} meshes of its own; camera space '{origin}'.");
+        return count;
     }
 
     private static T? GetField<T>(object instance, string name) where T : class =>

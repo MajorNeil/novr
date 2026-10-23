@@ -35,8 +35,11 @@ public class MenuButton : Button
 
     public event Action? Activated;
     public event Action<MenuButton>? Hovered;
+    // Left and right change its value (a setting) instead of moving the focus.
+    public event Action<int>? Adjusted;
 
     public bool Focused { get; private set; }
+    public bool Adjustable => Adjusted != null;
     public TextMeshProUGUI? Label => _label;
     public RectTransform Rect => (RectTransform)transform;
 
@@ -88,6 +91,14 @@ public class MenuButton : Button
         _lastActivated = now;
         MenuSounds.Select();
         Activated?.Invoke();
+    }
+
+    public void Adjust(int direction)
+    {
+        if (!IsActive() || !IsInteractable() || Adjusted == null) return;
+
+        MenuSounds.Move();
+        Adjusted(direction);
     }
 
     public override void OnPointerClick(PointerEventData eventData)

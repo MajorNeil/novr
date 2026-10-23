@@ -64,6 +64,14 @@ internal static class MenuKit
         label.alignment = alignment;
         label.enableWordWrapping = wrap;
         label.overflowMode = wrap ? TextOverflowModes.Truncate : TextOverflowModes.Ellipsis;
+        // A line too long for its box (the game's font is a wide one) shrinks a little before it is cut short.
+        if (!wrap)
+        {
+            label.enableAutoSizing = true;
+            label.fontSizeMin = size * 0.6f;
+            label.fontSizeMax = size;
+        }
+
         label.richText = true;
         label.raycastTarget = false;
         label.text = text;
