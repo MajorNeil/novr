@@ -1,5 +1,6 @@
 using System;
 using NOVR.VrCamera;
+using NOVR.VrUi.Menu;
 using NOVR.VrUi.Native;
 using UnityEngine;
 using UnityEngine.Rendering.Universal;
@@ -46,6 +47,7 @@ public class NOUIManager : NOVRBehaviour
         UIBehaviorPatcher.DoPatching();
         Create<VrUiCursor>(transform);
         Create<NativeVrUiRoot>(transform);
+        Create<MenuEnvironment>(transform);
         Create<InGameVrUiBar>(transform);
         Create<ThreatAwareness>(transform);
         ConfigureUiCameras();

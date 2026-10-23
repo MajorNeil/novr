@@ -21,7 +21,7 @@ namespace NOVR;
 [BepInPlugin(
     "deltawing.novr",
     "NOVR",
-    "0.4.20")]
+    "0.4.21")]
 public class NOVRPlugin : BaseUnityPlugin
 {
     
@@ -43,6 +43,7 @@ public class NOVRPlugin : BaseUnityPlugin
         GazeDesignatePatch.Apply();
         MinimapZoomPatch.Apply();
         RadarWarningVrPatch.Apply();
+        LoadingScreenPatch.Apply();
         Core.Create();
     }
 

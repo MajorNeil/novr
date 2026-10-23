@@ -1,5 +1,7 @@
-﻿using System.ComponentModel;
+﻿using System.Collections.Generic;
+using System.ComponentModel;
 using BepInEx.Configuration;
+using NOVR.VrUi.Menu;
 using UnityEngine;
 
 namespace NOVR;
@@ -42,6 +44,8 @@ public class ModConfiguration
     public readonly ConfigEntry<bool> ShowGazeDot;
     public readonly ConfigEntry<bool> GazeContactInfo;
     public readonly ConfigEntry<float> GazeContactDwellSeconds;
+    public readonly ConfigEntry<bool> MenuHangar;
+    public readonly Dictionary<MenuCommand, ConfigEntry<string>> MenuBindings = new();
 
     public ModConfiguration(ConfigFile config)
     {
@@ -236,6 +240,21 @@ public class ModConfiguration
             "Gaze Contact Dwell Seconds",
             0.3f,
             "How long your gaze has to rest on a marker before Gaze Contact Info shows.");
+
+        MenuHangar = config.Bind(
+            "Menus",
+            "Hangar",
+            true,
+            "Out of flight, the menus float inside one of the game's aircraft shelters, with an aircraft parked in it and others flying past outside. The door closes while a mission loads. Off shows the menus over plain sky.");
+
+        foreach (var command in MenuInput.Commands)
+        {
+            MenuBindings[command] = config.Bind(
+                MenuInput.Section,
+                MenuInput.Name(command),
+                MenuInput.DefaultBindings(command),
+                "Keyboard | gamepad | joystick binding for this in NOVR's menus, as Unity Input System control paths; leave a part empty for none. Easiest to set from Menu Controls in the main menu.");
+        }
     }
 }
 

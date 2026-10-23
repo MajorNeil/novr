@@ -106,6 +106,18 @@ public class NativeGameActionAdapter
         }
     }
 
+    public bool HasMainMenuButton(NativeGameAction action)
+    {
+        if (!_mainMenuActionLabels.TryGetValue(action, out var candidateLabels)) return false;
+
+        foreach (var button in GetButtons(includeInactive: false))
+        {
+            if (IsTopLevelMainMenuButton(button) && ButtonMatches(button, candidateLabels)) return true;
+        }
+
+        return false;
+    }
+
     public void QuitGame()
     {
         Debug.Log("[NOVR] Native UI quitting game.");

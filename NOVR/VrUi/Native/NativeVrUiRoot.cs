@@ -1,5 +1,7 @@
 using NOVR.VrUi.SpecialBehavior;
+using System;
 using System.Collections.Generic;
+using NOVR.VrUi.Menu;
 using NuclearOption.Networking.Lobbies;
 using NuclearOption.Workshop;
 using UnityEngine;
@@ -31,6 +33,9 @@ public class NativeVrUiRoot : NOVRBehaviour
     private GameObject? _root;
     private Canvas? _canvas;
     private NativeMainMenuShell? _mainMenuShell;
+    private MainMenuScreen? _mainMenu;
+    private MenuControlsScreen? _menuControls;
+    private bool _menuScreensFailed;
     private NativeMultiplayerPanel? _multiplayerPanel;
     private NativeSinglePlayerMissionPanel? _singlePlayerMissionPanel;
     private NativeSettingsPanel? _settingsPanel;
@@ -55,6 +60,7 @@ public class NativeVrUiRoot : NOVRBehaviour
     private bool _workshopRequested;
     private float _workshopRequestTime;
     private bool _vrUiSettingsOpen;
+    private bool _menuControlsOpen;
     private float _nextMainMenuScanTime;
     private float _pendingRecenterTime;
     private bool _recenterPending;
@@ -82,6 +88,7 @@ public class NativeVrUiRoot : NOVRBehaviour
 
         if (!IsNativeMenuUiEnabled)
         {
+            MenuInput.Release();
             RestoreOriginalMainCanvas();
             if (_root != null)
             {
@@ -133,6 +140,10 @@ public class NativeVrUiRoot : NOVRBehaviour
                                      !controlMapperOpen &&
                                      mainCanvasActive &&
                                      topLevelMainMenuAvailable;
+        var shouldShowMenuControls = _menuControlsOpen &&
+                                     !controlMapperOpen &&
+                                     mainCanvasActive &&
+                                     topLevelMainMenuAvailable;
         var shouldShowMainMenu = mainCanvasActive &&
                                  !controlMapperOpen &&
                                  topLevelMainMenuAvailable &&
@@ -141,7 +152,8 @@ public class NativeVrUiRoot : NOVRBehaviour
                                  !shouldShowSettings &&
                                  !waitingForSettingsMenu &&
                                  !shouldShowWorkshop &&
-                                 !shouldShowVrUiSettings;
+                                 !shouldShowVrUiSettings &&
+                                 !shouldShowMenuControls;
 
         if (shouldShowMainMenu)
         {
@@ -150,8 +162,12 @@ public class NativeVrUiRoot : NOVRBehaviour
             _settingsRequested = false;
             _workshopRequested = false;
             _vrUiSettingsOpen = false;
+            _menuControlsOpen = false;
+            EnsureMenuScreens();
         }
 
+        _mainMenu?.SetVisible(shouldShowMainMenu);
+        _menuControls?.SetVisible(shouldShowMenuControls);
         _mainMenuShell?.SetVisible(shouldShowMainMenu);
         _multiplayerPanel?.SetVisible(shouldShowMultiplayer);
         _singlePlayerMissionPanel?.SetVisible(shouldShowSinglePlayerMissionPicker);
@@ -159,7 +175,8 @@ public class NativeVrUiRoot : NOVRBehaviour
         _workshopPanel?.SetVisible(shouldShowWorkshop);
         _vrUiSettingsPanel?.SetVisible(shouldShowVrUiSettings);
 
-        var shouldShowNativeUi = shouldShowMainMenu || shouldShowSinglePlayerMissionPicker || shouldShowMultiplayer || shouldShowSettings || shouldShowWorkshop || shouldShowVrUiSettings;
+        var shouldShowNativeUi = shouldShowMainMenu || shouldShowSinglePlayerMissionPicker || shouldShowMultiplayer || shouldShowSettings || shouldShowWorkshop || shouldShowVrUiSettings || shouldShowMenuControls;
+        TickMenuScreens();
         HandleRecenterShortcut(shouldShowNativeUi);
         UpdatePlacement(shouldShowNativeUi);
         UpdatePendingRecenter(shouldShowNativeUi);
@@ -214,9 +231,6 @@ public class NativeVrUiRoot : NOVRBehaviour
         _root.AddComponent<GraphicRaycaster>();
         LayerHelper.SetLayerRecursive(_root.transform, LayerHelper.GetVrUiLayer());
 
-        _mainMenuShell = _root.AddComponent<NativeMainMenuShell>();
-        _mainMenuShell.Initialize(_actions, rectTransform, OpenVrUiSettingsPanel);
-        _mainMenuShell.SetOriginalMainCanvas(_mainCanvas);
         _multiplayerPanel = _root.AddComponent<NativeMultiplayerPanel>();
         _multiplayerPanel.Initialize(_actions, rectTransform);
         _multiplayerPanel.SetVisible(false);
@@ -237,6 +251,81 @@ public class NativeVrUiRoot : NOVRBehaviour
         _root.SetActive(false);
 
         Debug.Log("[NOVR] Native VR UI root created.");
+    }
+
+    // The new menu screens are built the first time the main menu shows, once the game's own menu is there to take its
+    // look from (MenuStyle). If they can't be built, the earlier main menu takes over.
+    private void EnsureMenuScreens()
+    {
+        if (_mainMenu != null || _mainMenuShell != null || _root == null) return;
+
+        var rectTransform = (RectTransform)_root.transform;
+        if (!_menuScreensFailed)
+        {
+            try
+            {
+                MenuStyle.Capture(_mainCanvas);
+                _mainMenu = new MainMenuScreen(rectTransform, _actions, () => _mainCanvas, OpenVrUiSettingsPanel, OpenMenuControls);
+                _menuControls = new MenuControlsScreen(rectTransform, CloseMenuControls);
+                return;
+            }
+            catch (Exception exception)
+            {
+                _menuScreensFailed = true;
+                Debug.LogWarning($"[NOVR] Could not build the new main menu, using the earlier one: {exception}");
+                if (_mainMenu != null) Destroy(_mainMenu.Root.gameObject);
+                if (_menuControls != null) Destroy(_menuControls.Root.gameObject);
+                _mainMenu = null;
+                _menuControls = null;
+            }
+        }
+
+        _mainMenuShell = _root.AddComponent<NativeMainMenuShell>();
+        _mainMenuShell.Initialize(_actions, rectTransform, OpenVrUiSettingsPanel);
+        _mainMenuShell.SetOriginalMainCanvas(_mainCanvas);
+    }
+
+    private void TickMenuScreens()
+    {
+        if (_mainMenu?.Visible == true || _menuControls?.Visible == true)
+        {
+            MenuInput.Update();
+        }
+        else
+        {
+            MenuInput.Release();
+        }
+
+        _mainMenu?.Tick();
+        _menuControls?.Tick();
+    }
+
+    private void HideMenuScreens()
+    {
+        _mainMenuShell?.SetVisible(false);
+        _mainMenu?.SetVisible(false);
+        _menuControls?.SetVisible(false);
+    }
+
+    private void OpenMenuControls()
+    {
+        _singlePlayerMissionPickerRequested = false;
+        _multiplayerRequested = false;
+        _settingsRequested = false;
+        _workshopRequested = false;
+        _vrUiSettingsOpen = false;
+        _menuControlsOpen = true;
+
+        _mainMenuShell?.SetVisible(false);
+        _mainMenu?.SetVisible(false);
+        _menuControls?.SetVisible(true);
+        SuppressOriginalMainCanvas(true);
+    }
+
+    private void CloseMenuControls()
+    {
+        _menuControlsOpen = false;
+        _menuControls?.SetVisible(false);
     }
 
     private void UpdatePlacement(bool shouldShowNativeUi)
@@ -516,6 +605,7 @@ public class NativeVrUiRoot : NOVRBehaviour
         _settingsRequested = false;
         _workshopRequested = false;
         _vrUiSettingsOpen = false;
+        _menuControlsOpen = false;
 
         if (IsMissionPickerAvailable())
         {
@@ -709,6 +799,7 @@ public class NativeVrUiRoot : NOVRBehaviour
     private void OnNativeActionInvoked(NativeGameAction action)
     {
         _vrUiSettingsOpen = false;
+        _menuControlsOpen = false;
         _singlePlayerMissionPickerRequested = action == NativeGameAction.SinglePlayer;
         if (_singlePlayerMissionPickerRequested)
         {
@@ -744,6 +835,7 @@ public class NativeVrUiRoot : NOVRBehaviour
         _multiplayerRequested = false;
         _settingsRequested = false;
         _workshopRequested = false;
+        _menuControlsOpen = false;
         _vrUiSettingsOpen = true;
 
         if (_root != null && !_root.activeSelf)
@@ -751,7 +843,7 @@ public class NativeVrUiRoot : NOVRBehaviour
             _root.SetActive(true);
         }
 
-        _mainMenuShell?.SetVisible(false);
+        HideMenuScreens();
         _multiplayerPanel?.SetVisible(false);
         _singlePlayerMissionPanel?.SetVisible(false);
         _settingsPanel?.SetVisible(false);
@@ -773,7 +865,7 @@ public class NativeVrUiRoot : NOVRBehaviour
             _root.SetActive(true);
         }
 
-        _mainMenuShell?.SetVisible(false);
+        HideMenuScreens();
         _multiplayerPanel?.SetVisible(false);
         _singlePlayerMissionPanel?.SetVisible(true);
         _settingsPanel?.SetVisible(false);
@@ -789,7 +881,7 @@ public class NativeVrUiRoot : NOVRBehaviour
             _root.SetActive(true);
         }
 
-        _mainMenuShell?.SetVisible(false);
+        HideMenuScreens();
         _multiplayerPanel?.SetVisible(true);
         _singlePlayerMissionPanel?.SetVisible(false);
         _settingsPanel?.SetVisible(false);
@@ -805,7 +897,7 @@ public class NativeVrUiRoot : NOVRBehaviour
             _root.SetActive(true);
         }
 
-        _mainMenuShell?.SetVisible(false);
+        HideMenuScreens();
         _multiplayerPanel?.SetVisible(false);
         _singlePlayerMissionPanel?.SetVisible(false);
         _settingsPanel?.SetVisible(false);
