@@ -75,6 +75,8 @@ public class MenuEnvironment : NOVRBehaviour
     private GameObject? _featured;
     private Transform? _board;
     private Transform? _boardLegs;
+    private bool _loggedBoard;
+    private float _logBoardAt;
     private Light? _sun;
     private AudioSource? _doorLoop;
     private AudioSource? _doorOneShot;
@@ -206,14 +208,18 @@ public class MenuEnvironment : NOVRBehaviour
             _site = new GameObject("Site").transform;
             _site.SetParent(_root.transform, false);
 
-            _lit = CreateMaterial("Universal Render Pipeline/Lit");
-            _unlit = CreateMaterial("Sprites/Default") ?? CreateMaterial("Universal Render Pipeline/Particles/Unlit");
             BuildShelter();
+            _lit = LitTemplate();
+            _unlit = UnlitTemplate();
             BuildSun();
             BuildSky();
             BuildOutside();
             BuildDesk();
             BuildBoard();
+            var hidden = HideUndrawable(_root);
+            NOVRPlugin.Log.LogInfo($"[NOVR] Menu hangar: surfaces from {Describe(_lit)}, sky from {Describe(_unlit)}; " +
+                                   $"{VisualClone.SkippedParts} parts of the game's models left out ({string.Join(", ", VisualClone.SkippedReasons)})" +
+                                   (hidden > 0 ? $", {hidden} undrawable parts hidden." : "."));
         }
         catch (Exception exception)
         {
@@ -234,6 +240,7 @@ public class MenuEnvironment : NOVRBehaviour
         ApplyDoor(0f);
         _openAt = Time.unscaledTime + OpenDelaySeconds;
         _nextFlyby = Time.unscaledTime + Random.Range(8f, 20f);
+        _logBoardAt = Time.unscaledTime + 3f;
         NOVRPlugin.Log.LogInfo($"[NOVR] Menu hangar: shown in {scene.name} from '{camera.name}', which draws {CountSceneMeshes(scene)} meshes of its own; " +
                                $"{FeaturedAircraft ?? "no aircraft"} parked.");
     }
@@ -645,9 +652,10 @@ public class MenuEnvironment : NOVRBehaviour
         if (_lit != null)
         {
             AddBox(outside, "Ground", new Vector3(0f, -0.8f, 0f), new Vector3(SkyRadius * 2f, 1f, SkyRadius * 2f), GroundColor, 0.1f);
-            AddBox(outside, "Apron", new Vector3(0f, -0.54f, _doorZ + 55f), new Vector3(80f, 1f, 120f), ConcreteColor, 0.2f);
-            var taxiwayLength = RunwayFromDoor - 115f;
-            AddBox(outside, "Taxiway", new Vector3(0f, -0.56f, _doorZ + 115f + taxiwayLength / 2f), new Vector3(24f, 1f, taxiwayLength), AsphaltColor, 0.25f);
+            // From the front of the shelter out, so none of it comes up through the shelter floor.
+            AddBox(outside, "Apron", new Vector3(0f, -0.54f, _doorZ + 60f), new Vector3(80f, 1f, 120f), ConcreteColor, 0.2f);
+            var taxiwayLength = RunwayFromDoor - 120f;
+            AddBox(outside, "Taxiway", new Vector3(0f, -0.56f, _doorZ + 120f + taxiwayLength / 2f), new Vector3(24f, 1f, taxiwayLength), AsphaltColor, 0.25f);
             AddBox(outside, "Runway", new Vector3(0f, -0.48f, _doorZ + RunwayFromDoor + 30f), new Vector3(5000f, 1f, 50f), AsphaltColor, 0.25f);
         }
 
@@ -796,7 +804,7 @@ public class MenuEnvironment : NOVRBehaviour
         var unit = NativeVrUiRoot.CanvasUnitMeters;
         var center = new Vector3(MainMenuScreen.RailCenter.x * unit, NativeVrUiRoot.MenuHeightOffset + MainMenuScreen.RailCenter.y * unit,
             NativeVrUiRoot.MenuDistance + 0.06f);
-        var size = (MainMenuScreen.RailSize + new Vector2(50f, 50f)) * unit;
+        var size = (MainMenuScreen.RailSize + new Vector2(90f, 90f)) * unit;
         _board.localPosition = center;
         _board.localScale = new Vector3(size.x, size.y, 0.04f);
 
@@ -806,6 +814,12 @@ public class MenuEnvironment : NOVRBehaviour
         _boardLegs.gameObject.SetActive(legHeight > 0.02f);
         _boardLegs.localPosition = new Vector3(center.x, -EyeHeight, center.z + 0.03f);
         _boardLegs.localScale = new Vector3(size.x - 0.2f, Mathf.Max(0.02f, legHeight), 1f);
+        // Once, after the menu has had time to settle on the seat.
+        if (_loggedBoard || Time.unscaledTime < _logBoardAt) return;
+
+        _loggedBoard = true;
+        NOVRPlugin.Log.LogInfo($"[NOVR] Menu hangar: board {size.x:0.00}x{size.y:0.00} m at {center.x:0.00}, {center.y:0.00}, {center.z:0.00} m from the seat; " +
+                               $"menu anchored at the seat: {NativeVrUiRoot.MenuAtSeat}.");
     }
 
     private void UpdateFlybys()
@@ -990,36 +1004,140 @@ public class MenuEnvironment : NOVRBehaviour
         return mesh;
     }
 
+    // The surfaces made here start from a material the shelter itself draws with (else any opaque one the game has loaded),
+    // recoloured with its textures taken off: one the game uses is sure to have its shader variant in the build whatever
+    // the game's lighting state, where a material made from the bare URP Lit shader drew pink.
+    private Material? LitTemplate()
+    {
+        var source = _shelter != null ? BestMaterial(ShelterMaterials(), lit: true) : null;
+        source ??= BestMaterial(Resources.FindObjectsOfTypeAll<Material>(), lit: true);
+        if (source != null) return new Material(source);
+
+        var shader = Shader.Find("Universal Render Pipeline/Lit");
+        return shader != null ? new Material(shader) : null;
+    }
+
+    // Sprites/Default is built in and has no optional variants; failing that, a copy of one of the game's unlit materials.
+    private static Material? UnlitTemplate()
+    {
+        var shader = Shader.Find("Sprites/Default");
+        if (shader != null && shader.isSupported) return new Material(shader);
+
+        var source = BestMaterial(Resources.FindObjectsOfTypeAll<Material>(), lit: false);
+        return source != null ? new Material(source) : null;
+    }
+
+    private IEnumerable<Material> ShelterMaterials()
+    {
+        foreach (var renderer in _shelter!.GetComponentsInChildren<MeshRenderer>(true))
+        {
+            foreach (var material in renderer.sharedMaterials) yield return material;
+        }
+    }
+
+    // The plainest drawable material of the kind: fewest shader keywords, URP's own shader first, opaque first.
+    private static Material? BestMaterial(IEnumerable<Material> materials, bool lit)
+    {
+        Material? best = null;
+        var bestScore = int.MaxValue;
+        foreach (var material in materials)
+        {
+            if (!VisualClone.Drawable(material) || !material.HasProperty("_BaseColor")) continue;
+
+            var shader = material.shader.name;
+            var unlit = shader.Contains("Unlit");
+            if (lit == unlit || (lit && (shader.Contains("Particles") || material.renderQueue >= 2450))) continue;
+
+            var score = material.shaderKeywords.Length;
+            if (!shader.StartsWith("Universal Render Pipeline/")) score += 20;
+            if (material.renderQueue >= 2450) score += 10;
+            if (score >= bestScore) continue;
+
+            best = material;
+            bestScore = score;
+        }
+
+        return best;
+    }
+
     private Material LitMaterial(Color color, float smoothness)
     {
         var material = new Material(_lit!);
-        material.SetColor("_BaseColor", color);
-        material.SetFloat("_Smoothness", smoothness);
+        SetTexture(material, "_BaseMap", Texture2D.whiteTexture);
+        SetTexture(material, "_MainTex", Texture2D.whiteTexture);
+        foreach (var name in new[] { "_BumpMap", "_DetailAlbedoMap", "_DetailNormalMap", "_DetailMask", "_ParallaxMap", "_EmissionMap" })
+        {
+            SetTexture(material, name, null);
+        }
+
+        SetTexture(material, "_MetallicGlossMap", Texture2D.blackTexture);
+        SetTexture(material, "_SpecGlossMap", Texture2D.blackTexture);
+        SetTexture(material, "_OcclusionMap", Texture2D.whiteTexture);
+        SetColor(material, "_BaseColor", color);
+        SetColor(material, "_Color", color);
+        SetColor(material, "_EmissionColor", Color.black);
+        SetColor(material, "_SpecColor", new Color(0.2f, 0.2f, 0.2f));
+        SetFloat(material, "_Metallic", 0f);
+        SetFloat(material, "_Smoothness", smoothness);
+        SetFloat(material, "_GlossMapScale", smoothness);
         return material;
     }
 
-    // Unlit and vertex coloured (Sprites/Default, which nearly every Unity game has, else the game's particle shader), drawn
-    // in this order after the opaque scene, from both sides.
+    // Unlit and vertex coloured, drawn in this order after the opaque scene, from both sides.
     private Material UnlitMaterial(Color color, int queue)
     {
         var material = new Material(_unlit!) { renderQueue = queue };
-        material.SetColor("_Color", color);
-        material.SetColor("_BaseColor", color);
-        material.SetFloat("_Cull", 0f);
+        SetTexture(material, "_MainTex", Texture2D.whiteTexture);
+        SetTexture(material, "_BaseMap", Texture2D.whiteTexture);
+        SetColor(material, "_Color", color);
+        SetColor(material, "_BaseColor", color);
+        SetFloat(material, "_Cull", 0f);
         return material;
     }
 
+    private static void SetTexture(Material material, string name, Texture? texture)
+    {
+        if (!material.HasProperty(name)) return;
+
+        material.SetTexture(name, texture);
+        material.SetTextureScale(name, Vector2.one);
+        material.SetTextureOffset(name, Vector2.zero);
+    }
+
+    private static void SetColor(Material material, string name, Color color)
+    {
+        if (material.HasProperty(name)) material.SetColor(name, color);
+    }
+
+    private static void SetFloat(Material material, string name, float value)
+    {
+        if (material.HasProperty(name)) material.SetFloat(name, value);
+    }
+
+    // Last line against pink: anything whose shader isn't usable is turned off.
+    private static int HideUndrawable(GameObject root)
+    {
+        var hidden = 0;
+        foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>(true))
+        {
+            foreach (var material in renderer.sharedMaterials)
+            {
+                if (VisualClone.Drawable(material)) continue;
+
+                renderer.enabled = false;
+                hidden++;
+                break;
+            }
+        }
+
+        return hidden;
+    }
+
+    private static string Describe(Material? material) =>
+        material == null ? "nothing (left out)" : $"'{material.name}' ({material.shader.name}, {material.shaderKeywords.Length} keywords)";
+
     // Vertex colours go to the shader as they are, so in a linear-colour game they are converted here.
     private static Color Linear(Color color) => QualitySettings.activeColorSpace == ColorSpace.Linear ? color.linear : color;
-
-    private static Material? CreateMaterial(string shaderName)
-    {
-        var shader = Shader.Find(shaderName);
-        if (shader != null) return new Material(shader);
-
-        NOVRPlugin.Log.LogInfo($"[NOVR] Menu hangar: no '{shaderName}' shader in the game; what needs it is left out.");
-        return null;
-    }
 
     // Whether the menu scene has a 3D scene of its own, which the shelter would then overlap.
     private static int CountSceneMeshes(Scene scene)

@@ -7,8 +7,26 @@ namespace NOVR.VrUi.Menu;
 // without the game's scripts, colliders or networking, so a unit can stand in the menus where the game isn't running.
 // Only the most detailed level of a LOD group is kept, as the copy is seen up close. Inactive parts are left out;
 // disabled renderers and lights are copied disabled, so the caller can turn on what it wants (a hangar's night lights).
+// Parts the game never draws to its world camera (helper volumes on its UI, HUD, exclusion zone, preview, editor and grass
+// blocker layers) and parts whose shader isn't in the build (they would draw pink) are left out too.
 internal static class VisualClone
 {
+    private static readonly HashSet<int> HiddenLayers = new()
+    {
+        (int)LayerHelper.Layers.UI,
+        (int)LayerHelper.Layers.HUD,
+        (int)LayerHelper.Layers.ExclusionZones,
+        (int)LayerHelper.Layers.PreviewRender,
+        (int)LayerHelper.Layers.EditorSelectOnly,
+        (int)LayerHelper.Layers.GrassBlockerProxy,
+        (int)LayerHelper.Layers.VrUi,
+        (int)LayerHelper.Layers.VrUiCapture
+    };
+
+    // What was left out, for one log line from the caller.
+    public static int SkippedParts { get; private set; }
+    public static readonly HashSet<string> SkippedReasons = new();
+
     // map, when given, gets each prefab transform's copy, to find the copies of parts the prefab's scripts name.
     public static GameObject Create(GameObject prefab, Transform parent, Dictionary<Transform, Transform>? map = null)
     {
@@ -73,6 +91,19 @@ internal static class VisualClone
         }
 
         if (mesh == null || renderer == null || skipped.Contains(renderer)) return;
+        if (HiddenLayers.Contains(source.gameObject.layer))
+        {
+            Skip($"layer {LayerMask.LayerToName(source.gameObject.layer)}");
+            return;
+        }
+
+        foreach (var material in renderer.sharedMaterials)
+        {
+            if (Drawable(material)) continue;
+
+            Skip(material == null ? "no material" : $"shader {(material.shader != null ? material.shader.name : "none")}");
+            return;
+        }
 
         copy.AddComponent<MeshFilter>().sharedMesh = mesh;
         var copied = copy.AddComponent<MeshRenderer>();
@@ -80,6 +111,15 @@ internal static class VisualClone
         copied.shadowCastingMode = renderer.shadowCastingMode;
         copied.receiveShadows = renderer.receiveShadows;
         copied.enabled = renderer.enabled;
+    }
+
+    public static bool Drawable(Material? material) =>
+        material != null && material.shader != null && material.shader.isSupported && material.shader.name != "Hidden/InternalErrorShader";
+
+    private static void Skip(string reason)
+    {
+        SkippedParts++;
+        SkippedReasons.Add(reason);
     }
 
     private static void CopyLight(Light source, GameObject copy)

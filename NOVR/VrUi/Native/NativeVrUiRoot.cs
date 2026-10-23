@@ -80,6 +80,7 @@ public class NativeVrUiRoot : NOVRBehaviour
     public static float CanvasUnitMeters => BaseCanvasScale * GetNativeMenuScale();
     public static float MenuDistance => GetNativeMenuDistance();
     public static float MenuHeightOffset => GetNativeMenuHeightOffset();
+    public static bool MenuAtSeat { get; private set; }
 
     public VrPointerState PointerState => _pointerState;
     public GameObject? OriginalMainCanvas => _mainCanvas;
@@ -470,7 +471,8 @@ public class NativeVrUiRoot : NOVRBehaviour
     {
         _anchorAtSeat = AnchorAtSeat;
         var seat = APIBus.CockpitHudCamera.transform.parent;
-        if (_anchorAtSeat && seat != null)
+        MenuAtSeat = _anchorAtSeat && seat != null;
+        if (MenuAtSeat && seat != null)
         {
             var seatForward = Vector3.ProjectOnPlane(seat.forward, Vector3.up);
             _menuAnchorPosition = seat.position;
