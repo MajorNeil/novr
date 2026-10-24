@@ -41,7 +41,7 @@ internal sealed class MenuList
 
     // fill(entry, cells) writes an entry's columns into a row's texts.
     public MenuList(Transform parent, string name, Vector2 center, float width, int rows, float rowHeight, float rowStep,
-        Column[] columns, Action<int, TextMeshProUGUI[]> fill)
+        Column[] columns, Action<int, TextMeshProUGUI[]> fill, float textSize = MenuStyle.SmallSize)
     {
         _fill = fill;
         _height = rowHeight + (rows - 1) * rowStep;
@@ -58,12 +58,12 @@ internal sealed class MenuList
         {
             var row = index;
             var button = MenuKit.Button(Rect, $"Row {index}", "", new Vector2(-(BarWidth + BarGap) / 2f, top - index * rowStep),
-                new Vector2(rowWidth, rowHeight), () => Activated?.Invoke(Offset + row), MenuButton.Look.Secondary, MenuStyle.SmallSize);
+                new Vector2(rowWidth, rowHeight), () => Activated?.Invoke(Offset + row), MenuButton.Look.Secondary, textSize);
             var cells = new TextMeshProUGUI[columns.Length];
             for (var column = 0; column < columns.Length; column++)
             {
                 var spec = columns[column];
-                cells[column] = MenuKit.Text(button.transform, $"Column {column}", "", MenuStyle.SmallSize, spec.Dim ? MenuStyle.TextDim : MenuStyle.Text,
+                cells[column] = MenuKit.Text(button.transform, $"Column {column}", "", textSize, spec.Dim ? MenuStyle.TextDim : MenuStyle.Text,
                     spec.Alignment, new Vector2(spec.X, 0f), new Vector2(spec.Width, rowHeight));
             }
 

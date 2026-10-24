@@ -66,7 +66,7 @@ internal abstract class MenuScreen
         if (!Visible) return;
 
         OnTick();
-        if (MenuInput.IsRebinding) return;
+        if (MenuInput.IsRebinding || Capturing) return;
         if (MenuField.Typing)
         {
             if (MenuInput.PressedOn(MenuCommand.Select, MenuDevice.Joystick) || MenuInput.PressedOn(MenuCommand.Back, MenuDevice.Joystick))
@@ -116,6 +116,9 @@ internal abstract class MenuScreen
     }
 
     protected MenuButton? Focused => _focused;
+
+    // While true the controls are left alone: the screen is listening for an input to bind.
+    protected virtual bool Capturing => false;
 
     protected bool CanFocus(MenuButton? button) => button != null && Usable(button);
 

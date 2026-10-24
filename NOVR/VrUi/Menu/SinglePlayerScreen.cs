@@ -9,26 +9,14 @@ using UnityEngine;
 
 namespace NOVR.VrUi.Menu;
 
-// The game's single player missions, in its menu style: the mission groups down the left-hand panel, the missions of the
-// chosen one in a list, and the one focused or picked described on the right. Select on a mission picks it and goes to
-// Start; the tab bindings change group, and Left and Right on Tags filter by time of day or mission type. Up and Down run
-// down a column; Right goes from the groups to the list and on to Start, Left back the same way, as does Back. The missions
-// are loaded and started as the game's own picker does (NativeSinglePlayerMissionPanel did the same), which is kept in
-// step behind this, so Customize opens the game's own screen for the picked mission.
-internal sealed class SinglePlayerScreen : MenuScreen
+// The game's single player missions, built and used like the settings (RailScreen): the mission groups down the
+// left-hand panel, and the missions of the chosen one as rows beside it, under a Tags row that filters them. The focused
+// mission is described on the right; Select on it opens Start Mission and Customize. The missions are loaded and started
+// as the game's own picker does (NativeSinglePlayerMissionPanel did the same), which is kept in step behind this, so
+// Customize opens the game's own screen for the mission.
+internal sealed class SinglePlayerScreen : RailScreen
 {
-    private const float ContentX = 300f;
-    private static readonly Vector2 ContentSize = new(1200f, 960f);
-    private const float ListX = -270f;
-    private const float ListWidth = 620f;
-    private const float DetailsX = 330f;
-    private const float DetailsWidth = 500f;
-    private const int Rows = 12;
-    private const float RowHeight = 50f;
-    private const float RowStep = 56f;
-    private const float RailButtonWidth = 440f;
-    private const float RailButtonHeight = 50f;
-    private const float RailStep = 58f;
+    private const int ListRows = 10;
 
     private enum Group
     {
@@ -40,14 +28,14 @@ internal sealed class SinglePlayerScreen : MenuScreen
         Workshop
     }
 
-    private static readonly (Group Group, string Label)[] Groups =
+    private static readonly (Group Group, string Label, string Title)[] Groups =
     {
-        (Group.All, "ALL"),
-        (Group.FreeFlight, "FREE FLIGHT"),
-        (Group.Tutorials, "TUTORIALS"),
-        (Group.Missions, "MISSIONS"),
-        (Group.User, "USER"),
-        (Group.Workshop, "WORKSHOP")
+        (Group.All, "ALL", "ALL MISSIONS"),
+        (Group.FreeFlight, "FREE FLIGHT", "FREE FLIGHT"),
+        (Group.Tutorials, "TUTORIALS", "TUTORIALS"),
+        (Group.Missions, "MISSIONS", "MISSIONS"),
+        (Group.User, "USER", "USER MISSIONS"),
+        (Group.Workshop, "WORKSHOP", "WORKSHOP MISSIONS")
     };
 
     private static readonly (string Label, MissionTag? Tag)[] Tags =
@@ -65,188 +53,80 @@ internal sealed class SinglePlayerScreen : MenuScreen
     private readonly List<(MissionKey Key, MissionQuickLoad Mission)> _missions = new();
     private readonly List<(MissionKey Key, MissionQuickLoad Mission)> _shown = new();
     private readonly Dictionary<Group, MenuButton> _groupButtons = new();
+    private readonly Section _section;
     private readonly MenuList _list;
-    private readonly MenuSetting _tags;
-    private readonly TextMeshProUGUI _position;
-    private readonly TextMeshProUGUI _title;
-    private readonly TextMeshProUGUI _subtitle;
-    private readonly TextMeshProUGUI _description;
-    private readonly TextMeshProUGUI _status;
-    private readonly TextMeshProUGUI _prompts;
-    private readonly MenuButton _customize;
-    private readonly MenuButton _start;
-    private readonly List<MenuButton> _rail = new();
-    private readonly List<MenuButton> _column = new();
-    private readonly List<MenuButton> _details = new();
-    private MenuButton? _lastListFocus;
     private Group _group = Group.All;
     private int _tag;
-    private MissionKey? _picked;
-    private MenuDevice _promptDevice = (MenuDevice)(-1);
 
-    public SinglePlayerScreen(RectTransform canvas, NativeGameActionAdapter actions) : base(canvas, "NOVR Single Player")
+    public SinglePlayerScreen(RectTransform canvas, NativeGameActionAdapter actions) : base(canvas, "NOVR Single Player", "SINGLE PLAYER")
     {
         _actions = actions;
-
-        var rail = MenuKit.Panel(Root, "Groups", MainMenuScreen.RailCenter, MainMenuScreen.RailSize).rectTransform;
-        var top = MainMenuScreen.RailSize.y / 2f;
-        MenuKit.Text(rail, "Title", "SINGLE PLAYER", MenuStyle.HeadingSize, MenuStyle.Text, TextAlignmentOptions.Left,
-            new Vector2(0f, top - 70f), new Vector2(RailButtonWidth, 64f), heading: true);
-        MenuKit.Image(rail, "Title Rule", MenuStyle.TextDim.WithAlpha(0.35f), new Vector2(0f, top - 112f), new Vector2(RailButtonWidth, 2f));
-
-        var y = top - 160f;
-        foreach (var (group, label) in Groups)
+        foreach (var (group, label, _) in Groups)
         {
-            _groupButtons[group] = Add(MenuKit.Button(rail, label, label, new Vector2(0f, y), new Vector2(RailButtonWidth, RailButtonHeight),
-                () => SetGroup(group), MenuButton.Look.Secondary));
-            _rail.Add(_groupButtons[group]);
-            y -= RailStep;
+            _groupButtons[group] = AddRailButton(label, () => SetGroup(group));
         }
 
-        y -= 18f;
-        _rail.Add(Add(MenuKit.Button(rail, "User Folder", "OPEN USER FOLDER", new Vector2(0f, y), new Vector2(RailButtonWidth, RailButtonHeight),
-            () => _actions.TryInvokeCurrentMenuButton("Open User Folder", "Open User Folder", "OPEN USER FOLDER"), MenuButton.Look.Secondary)));
-        y -= RailStep + 18f;
-        _rail.Add(Add(MenuKit.Button(rail, "Back", "BACK", new Vector2(0f, y), new Vector2(RailButtonWidth, 56f), Leave)));
+        AddRailButton("OPEN USER FOLDER", () => _actions.TryInvokeCurrentMenuButton("Open User Folder", "Open User Folder", "OPEN USER FOLDER"),
+            gapBefore: true);
+        AddRailBack();
 
-        _prompts = MenuKit.Text(rail, "Prompts", "", MenuStyle.SmallSize, MenuStyle.TextDim, TextAlignmentOptions.Left,
-            new Vector2(0f, -top + 40f), new Vector2(RailButtonWidth, 34f));
-
-        var content = MenuKit.Panel(Root, "Missions", new Vector2(ContentX, 0f), ContentSize).rectTransform;
-        _tags = new MenuSetting(content, "TAGS", new Vector2(ListX, 400f), new Vector2(ListWidth, 56f), 200f,
-            () => Tags[_tag].Label, direction => SetTag((_tag + direction + Tags.Length) % Tags.Length), null, () => _tags?.Refresh());
-        _column.Add(Add(_tags.Button));
-
-        var columns = new[] { new MenuList.Column(0f, ListWidth - 60f) };
-        _list = new MenuList(content, "Mission List", new Vector2(ListX, 360f - (RowHeight + (Rows - 1) * RowStep) / 2f), ListWidth, Rows,
-            RowHeight, RowStep, columns, FillRow);
-        _list.Activated += Pick;
-        foreach (var row in _list.Rows) _column.Add(Add(row));
-
-        _position = MenuKit.Text(content, "Position", "", MenuStyle.SmallSize, MenuStyle.TextDim, TextAlignmentOptions.Left,
-            new Vector2(ListX, -345f), new Vector2(ListWidth, 32f));
-
-        _title = MenuKit.Text(content, "Mission", "", MenuStyle.HeadingSize, MenuStyle.Text, TextAlignmentOptions.Left,
-            new Vector2(DetailsX, 400f), new Vector2(DetailsWidth, 64f), heading: true);
-        _subtitle = MenuKit.Text(content, "Tags", "", MenuStyle.SmallSize, MenuStyle.Accent, TextAlignmentOptions.Left,
-            new Vector2(DetailsX, 350f), new Vector2(DetailsWidth, 32f));
-        _description = MenuKit.Text(content, "Description", "", MenuStyle.SmallSize, MenuStyle.Text, TextAlignmentOptions.TopLeft,
-            new Vector2(DetailsX, 40f), new Vector2(DetailsWidth, 580f), wrap: true);
-        _status = MenuKit.Text(content, "Status", "", MenuStyle.SmallSize, MenuStyle.Danger, TextAlignmentOptions.Left,
-            new Vector2(DetailsX, -275f), new Vector2(DetailsWidth, 32f));
-        _customize = Add(MenuKit.Button(content, "Customize", "CUSTOMIZE", new Vector2(DetailsX, -330f), new Vector2(DetailsWidth, 56f),
-            Customize, MenuButton.Look.Secondary));
-        _start = Add(MenuKit.Button(content, "Start", "START MISSION", new Vector2(DetailsX, -400f), new Vector2(DetailsWidth, 62f), Start));
-        _details.Add(_customize);
-        _details.Add(_start);
-        SetOrders(_rail, _column, _details);
-        ShowDetails(null);
+        _section = AddSection("ALL MISSIONS");
+        AddSetting(_section, "TAGS", () => Tags[_tag].Label, direction => SetTag((_tag + direction + Tags.Length) % Tags.Length),
+            description: "Only the missions with this tag: player against environment or player against player, or the time of day.");
+        _list = AddList(_section, ListRows, FillRow);
+        ShowSection(_section);
+        CurrentRailButton = _groupButtons[_group];
+        RefreshGroups();
     }
 
     protected override void OnShown()
     {
-        _promptDevice = (MenuDevice)(-1);
-        _status.text = "";
+        base.OnShown();
+        SetStatus("");
         // Every time, for missions saved or downloaded since.
         Load();
         RefreshGroups();
-        ShowDetails(_picked);
-    }
-
-    protected override void OnTick()
-    {
-        if (_promptDevice == MenuInput.LastDevice) return;
-
-        _promptDevice = MenuInput.LastDevice;
-        _prompts.text = $"{Prompt(MenuCommand.PreviousTab)}/{Prompt(MenuCommand.NextTab)} Group   {Prompt(MenuCommand.Back)} Back";
-    }
-
-    protected override MenuButton? FirstFocus()
-    {
-        var picked = _shown.FindIndex(entry => Same(entry.Key, _picked));
-        if (picked >= 0)
-        {
-            _list.ScrollTo(picked);
-            return _list.Rows[picked - _list.Offset];
-        }
-
-        return _list.Count > 0 ? _list.Rows[0] : _groupButtons[_group];
-    }
-
-    protected override bool OnBack()
-    {
-        var focused = Focused;
-        if (focused != null && _details.Contains(focused) && CanFocus(_lastListFocus))
-        {
-            Focus(_lastListFocus, sound: false);
-            return true;
-        }
-
-        if (focused != null && !_rail.Contains(focused))
-        {
-            Focus(_groupButtons[_group], sound: false);
-            return true;
-        }
-
-        Leave();
-        return true;
     }
 
     protected override void OnTab(int direction)
     {
         var index = Array.FindIndex(Groups, entry => entry.Group == _group);
         SetGroup(Groups[(index + direction + Groups.Length) % Groups.Length].Group);
+        Focus(_groupButtons[_group], sound: false);
         MenuSounds.Move();
     }
 
-    protected override bool OnOrderStep(List<MenuButton> order, MenuButton focused, int step)
+    protected override void Leave() => _actions.TryInvokeCurrentMenuButton("Back", "< BACK", "BACK", "MenuExit_Button");
+
+    protected override void Describe(Section section, MenuButton? row, int entry)
     {
-        if (order != _column || !_list.StepPast(focused, step)) return false;
-
-        RefreshPosition();
-        ShowDetails(EntryKey(_list.EntryOf(Focused)));
-        return true;
-    }
-
-    // The columns end there; across is Left and Right.
-    protected override bool OnOrderEnd(List<MenuButton> order, int step) => true;
-
-    protected override bool OnSideways(MenuButton focused, int direction)
-    {
-        if (_rail.Contains(focused))
+        if (entry >= 0 && entry < _shown.Count)
         {
-            if (direction > 0) FocusFirst(_lastListFocus, _list.Rows[0], _tags.Button);
-            return true;
+            var mission = _shown[entry];
+            ShowDetails(mission.Key.Name, TagLine(mission.Mission), GroupName(mission.Key), mission.Mission.missionSettings.description ?? "");
+            return;
         }
 
-        if (_column.Contains(focused))
+        if (row != null)
         {
-            var entry = _list.EntryOf(focused);
-            if (direction < 0) Focus(_groupButtons[_group], sound: true);
-            else if (entry >= 0) Pick(entry);
-            else FocusFirst(_start, _customize);
-            return true;
+            base.Describe(section, row, entry);
+            return;
         }
 
-        if (_details.Contains(focused))
-        {
-            if (direction < 0) FocusFirst(_lastListFocus, _list.Rows[0], _tags.Button);
-            return true;
-        }
-
-        return false;
+        ShowDetails(Groups[Array.FindIndex(Groups, item => item.Group == _group)].Title, $"{_shown.Count} MISSIONS", "",
+            "Pick a mission from the list, then Start Mission or Customize.");
     }
 
-    // The focused mission is described while the focus is on the list; the picked one otherwise.
-    protected override void OnFocused(MenuButton? button)
+    protected override void Open(Section section, int entry)
     {
-        if (button != null && _column.Contains(button)) _lastListFocus = button;
-        var entry = _list.EntryOf(button);
-        ShowDetails(entry >= 0 ? _shown[entry].Key : _picked);
-    }
+        if (entry < 0 || entry >= _shown.Count) return;
 
-    private static string Prompt(MenuCommand command) =>
-        $"<color=#{MenuStyle.Hex(MenuStyle.Accent)}>{MenuInput.GetPrompt(command).ToUpperInvariant()}</color>";
+        var mission = _shown[entry];
+        _actions.TrySelectOriginalMission(mission.Key);
+        OpenPopup(mission.Key.Name, TagLine(mission.Mission), mission.Mission.missionSettings.description ?? "", picture: false, fieldLabel: null,
+            ("START MISSION", () => Start(mission.Key)),
+            ("CUSTOMIZE", () => Customize(mission.Key)));
+    }
 
     private void Load()
     {
@@ -262,7 +142,7 @@ internal sealed class SinglePlayerScreen : MenuScreen
         catch (Exception exception)
         {
             NOVRPlugin.Log.LogWarning($"[NOVR] Could not load the single player missions: {exception.Message}");
-            _status.text = "The missions couldn't be loaded.";
+            SetStatus("The missions couldn't be loaded.");
         }
 
         ApplyFilters();
@@ -276,15 +156,18 @@ internal sealed class SinglePlayerScreen : MenuScreen
             if (InGroup(entry.Key, _group) && HasTag(entry.Mission, Tags[_tag].Tag)) _shown.Add(entry);
         }
 
-        _list.Selected = _shown.FindIndex(entry => Same(entry.Key, _picked));
         _list.SetCount(_shown.Count);
         _list.Reset();
-        RefreshPosition();
+        SetCount(_shown.Count == 0 ? "NO MISSIONS" : $"{_shown.Count} MISSIONS");
+        RefreshDetails();
     }
 
     private void SetGroup(Group group)
     {
         _group = group;
+        CurrentRailButton = _groupButtons[group];
+        _section.Title = Groups[Array.FindIndex(Groups, entry => entry.Group == group)].Title;
+        ShowSection(_section);
         ApplyFilters();
         RefreshGroups();
     }
@@ -298,93 +181,70 @@ internal sealed class SinglePlayerScreen : MenuScreen
 
     private void RefreshGroups()
     {
-        foreach (var (group, label) in Groups)
+        foreach (var (group, label, _) in Groups)
         {
             var button = _groupButtons[group];
             button.Highlight = group == _group;
             var count = _missions.Count(entry => InGroup(entry.Key, group) && HasTag(entry.Mission, Tags[_tag].Tag));
             button.SetLabel($"{label}  <color=#{MenuStyle.Hex(MenuStyle.TextDim)}>{count}</color>");
         }
-
-        _tags.Refresh();
     }
 
-    private void RefreshPosition()
+    private void FillRow(int entry, TextMeshProUGUI name, TextMeshProUGUI value)
     {
-        _position.text = _shown.Count == 0 ? "NO MISSIONS HERE" : _list.Position;
+        var mission = _shown[entry];
+        name.text = mission.Key.Name;
+        value.text = ShortTags(mission.Mission);
     }
 
-    private void FillRow(int entry, TextMeshProUGUI[] cells)
+    private bool Start(MissionKey key)
     {
-        var key = _shown[entry].Key;
-        cells[0].text = key.Name;
-        cells[0].color = Same(key, _picked) ? MenuStyle.Accent : MenuStyle.Text;
-    }
-
-    private void Pick(int entry)
-    {
-        if (entry < 0 || entry >= _shown.Count) return;
-
-        _picked = _shown[entry].Key;
-        _status.text = "";
-        _actions.TrySelectOriginalMission(_shown[entry].Key);
-        _list.Selected = entry;
-        _list.Refresh();
-        ShowDetails(_picked);
-        FocusFirst(_start);
-    }
-
-    private void ShowDetails(MissionKey? key)
-    {
-        var entry = _missions.FindIndex(candidate => Same(candidate.Key, key));
-        if (entry < 0)
+        if (!key.TryLoad(out var mission, out var error))
         {
-            _title.text = _shown.Count > 0 ? "PICK A MISSION" : "";
-            _subtitle.text = "";
-            _description.text = "";
-        }
-        else
-        {
-            var mission = _missions[entry];
-            _title.text = mission.Key.Name;
-            var tags = mission.Mission.missionSettings.Tags;
-            _subtitle.text = tags != null ? string.Join("   ", tags.Select(tag => tag.Tag.ToUpperInvariant())) : "";
-            _description.text = mission.Mission.missionSettings.description ?? "";
-        }
-
-        _start.interactable = _picked != null;
-        _customize.interactable = _picked != null;
-    }
-
-    private MissionKey? EntryKey(int entry) => entry >= 0 && entry < _shown.Count ? _shown[entry].Key : _picked;
-
-    private void Start()
-    {
-        if (_picked is not { } picked) return;
-
-        if (!picked.TryLoad(out var mission, out var error))
-        {
-            _status.text = error;
-            NOVRPlugin.Log.LogWarning($"[NOVR] Could not load mission '{picked.Name}': {error}");
-            return;
+            SetPopupStatus(error);
+            NOVRPlugin.Log.LogWarning($"[NOVR] Could not load mission '{key.Name}': {error}");
+            return false;
         }
 
         MissionManager.SetMission(mission, checkIfSame: false);
         NetworkManagerNuclearOption.i.StartHost(new HostOptions(SocketType.Offline, GameState.SinglePlayer, mission.MapKey));
+        return true;
     }
 
     // The game's own screen for it, which shows instead of this until it is closed.
-    private void Customize()
+    private bool Customize(MissionKey key)
     {
-        if (_picked is not { } picked) return;
-
-        _actions.TrySelectOriginalMission(picked);
+        _actions.TrySelectOriginalMission(key);
         _actions.TryInvokeCurrentMenuButton("Customize Mission", "Customize Mission", "CUSTOMIZE MISSION");
+        return true;
     }
 
-    private void Leave()
+    private static string TagLine(MissionQuickLoad mission)
     {
-        _actions.TryInvokeCurrentMenuButton("Back", "< BACK", "BACK", "MenuExit_Button");
+        var tags = mission.missionSettings.Tags;
+        return tags != null ? string.Join("   ", tags.Select(tag => tag.Tag.ToUpperInvariant())) : "";
+    }
+
+    // The tags that tell missions apart in the list: the mission type and the time of day.
+    private static string ShortTags(MissionQuickLoad mission)
+    {
+        var shown = new List<string>();
+        foreach (var (label, tag) in Tags)
+        {
+            if (tag != null && HasTag(mission, tag)) shown.Add(label);
+        }
+
+        return string.Join(" ", shown);
+    }
+
+    private static string GroupName(MissionKey key)
+    {
+        foreach (var (group, label, _) in Groups)
+        {
+            if (group != Group.All && InGroup(key, group)) return label;
+        }
+
+        return "";
     }
 
     private static bool HasTag(MissionQuickLoad mission, MissionTag? tag)
@@ -407,7 +267,4 @@ internal sealed class SinglePlayerScreen : MenuScreen
 
     private static bool SameGroup(MissionGroup? left, MissionGroup? right) =>
         ReferenceEquals(left, right) || string.Equals(left?.Name, right?.Name, StringComparison.OrdinalIgnoreCase);
-
-    private static bool Same(MissionKey left, MissionKey? right) =>
-        right is { } other && SameGroup(left.Group, other.Group) && string.Equals(left.Name, other.Name, StringComparison.Ordinal);
 }

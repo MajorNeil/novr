@@ -36,6 +36,7 @@ public class NativeVrUiRoot : NOVRBehaviour
     private MainMenuScreen? _mainMenu;
     private MenuControlsScreen? _menuControls;
     private SettingsScreen? _settingsScreen;
+    private KeyBindingsScreen? _keyBindings;
     private SinglePlayerScreen? _singlePlayerScreen;
     private MultiplayerScreen? _multiplayerScreen;
     private WorkshopScreen? _workshopScreen;
@@ -68,6 +69,7 @@ public class NativeVrUiRoot : NOVRBehaviour
     private bool _menuControlsOpen;
     private bool _menuControlsFromSettings;
     private bool _settingsScreenOpen;
+    private bool _keyBindingsOpen;
     private bool _anchorAtSeat;
     private float _nextMainMenuScanTime;
     private float _pendingRecenterTime;
@@ -159,8 +161,13 @@ public class NativeVrUiRoot : NOVRBehaviour
                                      !controlMapperOpen &&
                                      mainCanvasActive &&
                                      topLevelMainMenuAvailable;
+        var shouldShowKeyBindings = _keyBindingsOpen &&
+                                    !controlMapperOpen &&
+                                    mainCanvasActive &&
+                                    topLevelMainMenuAvailable;
         var shouldShowSettingsScreen = _settingsScreenOpen &&
                                        !_menuControlsOpen &&
+                                       !_keyBindingsOpen &&
                                        !controlMapperOpen &&
                                        mainCanvasActive &&
                                        topLevelMainMenuAvailable;
@@ -174,7 +181,9 @@ public class NativeVrUiRoot : NOVRBehaviour
                                  !shouldShowWorkshop &&
                                  !shouldShowVrUiSettings &&
                                  !shouldShowMenuControls &&
-                                 !shouldShowSettingsScreen;
+                                 !shouldShowSettingsScreen &&
+                                 !shouldShowKeyBindings &&
+                                 !_keyBindingsOpen;
 
         if (shouldShowMainMenu)
         {
@@ -185,12 +194,20 @@ public class NativeVrUiRoot : NOVRBehaviour
             _vrUiSettingsOpen = false;
             _menuControlsOpen = false;
             _settingsScreenOpen = false;
+            _keyBindingsOpen = false;
             EnsureMenuScreens();
         }
 
         _mainMenu?.SetVisible(shouldShowMainMenu);
         _menuControls?.SetVisible(shouldShowMenuControls);
         _settingsScreen?.SetVisible(shouldShowSettingsScreen);
+        if (!TrySetVisible(ref _keyBindings, shouldShowKeyBindings, "key bindings") && _keyBindingsOpen)
+        {
+            // Failed: the game's own screen instead.
+            _keyBindingsOpen = false;
+            if (shouldShowKeyBindings) OpenKeyBindings();
+        }
+
         _mainMenuShell?.SetVisible(shouldShowMainMenu);
         ShowMultiplayer(shouldShowMultiplayer);
         ShowSinglePlayer(shouldShowSinglePlayerMissionPicker);
@@ -198,7 +215,7 @@ public class NativeVrUiRoot : NOVRBehaviour
         ShowWorkshop(shouldShowWorkshop);
         _vrUiSettingsPanel?.SetVisible(shouldShowVrUiSettings);
 
-        var shouldShowNativeUi = shouldShowMainMenu || shouldShowSinglePlayerMissionPicker || shouldShowMultiplayer || shouldShowSettings || shouldShowWorkshop || shouldShowVrUiSettings || shouldShowMenuControls || shouldShowSettingsScreen;
+        var shouldShowNativeUi = shouldShowMainMenu || shouldShowSinglePlayerMissionPicker || shouldShowMultiplayer || shouldShowSettings || shouldShowWorkshop || shouldShowVrUiSettings || shouldShowMenuControls || shouldShowSettingsScreen || shouldShowKeyBindings;
         TickMenuScreens();
         HandleRecenterShortcut(shouldShowNativeUi);
         UpdatePlacement(shouldShowNativeUi);
@@ -209,7 +226,7 @@ public class NativeVrUiRoot : NOVRBehaviour
         }
 
         // The game's binding screen opened from the settings floats over the hangar without the game's flat menu behind it.
-        SuppressOriginalMainCanvas(shouldShowNativeUi || (_settingsScreenOpen && controlMapperOpen));
+        SuppressOriginalMainCanvas(shouldShowNativeUi || ((_settingsScreenOpen || _keyBindingsOpen) && controlMapperOpen));
     }
 
     protected override void OnSettingChanged()
@@ -292,7 +309,8 @@ public class NativeVrUiRoot : NOVRBehaviour
                 _mainMenu = new MainMenuScreen(rectTransform, _actions, () => _mainCanvas, OpenSettingsScreen, () => OpenMenuControls(fromSettings: false),
                     RecenterMenu, () => _recenterPending ? _pendingRecenterTime - Time.unscaledTime : 0f);
                 _menuControls = new MenuControlsScreen(rectTransform, CloseMenuControls);
-                _settingsScreen = new SettingsScreen(rectTransform, CloseSettingsScreen, () => OpenMenuControls(fromSettings: true), OpenKeyBindings, RecenterMenu);
+                _settingsScreen = new SettingsScreen(rectTransform, CloseSettingsScreen, () => OpenMenuControls(fromSettings: true), OpenKeyBindingsScreen, RecenterMenu);
+                _keyBindings = TryBuild("key bindings", () => new KeyBindingsScreen(rectTransform, CloseKeyBindingsScreen, OpenKeyBindings));
                 _singlePlayerScreen = TryBuild("single player", () => new SinglePlayerScreen(rectTransform, _actions));
                 _multiplayerScreen = TryBuild("multiplayer", () => new MultiplayerScreen(rectTransform, _actions));
                 _workshopScreen = TryBuild("workshop", () => new WorkshopScreen(rectTransform, _actions));
@@ -331,7 +349,8 @@ public class NativeVrUiRoot : NOVRBehaviour
     }
 
     private bool MenuScreensVisible => _mainMenu?.Visible == true || _menuControls?.Visible == true || _settingsScreen?.Visible == true ||
-                                       _singlePlayerScreen?.Visible == true || _multiplayerScreen?.Visible == true || _workshopScreen?.Visible == true;
+                                       _singlePlayerScreen?.Visible == true || _multiplayerScreen?.Visible == true || _workshopScreen?.Visible == true ||
+                                       _keyBindings?.Visible == true;
 
     private void TickMenuScreens()
     {
@@ -344,6 +363,7 @@ public class NativeVrUiRoot : NOVRBehaviour
             _singlePlayerScreen?.Tick();
             _multiplayerScreen?.Tick();
             _workshopScreen?.Tick();
+            _keyBindings?.Tick();
         }
         catch (Exception exception)
         {
@@ -376,6 +396,7 @@ public class NativeVrUiRoot : NOVRBehaviour
         _mainMenu?.SetVisible(false);
         _menuControls?.SetVisible(false);
         _settingsScreen?.SetVisible(false);
+        _keyBindings?.SetVisible(false);
     }
 
     // The new screens once the new menus are built, else the earlier panels.
@@ -423,6 +444,7 @@ public class NativeVrUiRoot : NOVRBehaviour
         _settingsRequested = false;
         _workshopRequested = false;
         _vrUiSettingsOpen = false;
+        _keyBindingsOpen = false;
     }
 
     private void OpenMenuControls(bool fromSettings)
@@ -461,6 +483,29 @@ public class NativeVrUiRoot : NOVRBehaviour
     {
         _settingsScreenOpen = false;
         _settingsScreen?.SetVisible(false);
+    }
+
+    // NOVR's key binding screen, from the settings, which come back when it closes; the game's own when it isn't built.
+    private void OpenKeyBindingsScreen()
+    {
+        if (_keyBindings == null)
+        {
+            OpenKeyBindings();
+            return;
+        }
+
+        ClearMenuRequests();
+        _settingsScreenOpen = true;
+        _keyBindingsOpen = true;
+        HideMenuScreens();
+        _keyBindings.SetVisible(true);
+        SuppressOriginalMainCanvas(true);
+    }
+
+    private void CloseKeyBindingsScreen()
+    {
+        _keyBindingsOpen = false;
+        _keyBindings?.SetVisible(false);
     }
 
     // The game's own binding screen, over the hangar; the settings come back when it closes.
