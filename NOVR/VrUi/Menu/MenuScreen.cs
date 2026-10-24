@@ -7,7 +7,9 @@ namespace NOVR.VrUi.Menu;
 // focus there, the direction bindings move it to the nearest button that way, Select activates it and Back goes back.
 // The focus stays where it is when the pointer leaves, so switching between the cursor and the controls never loses it.
 // A list of settings can be given an order, which Up and Down follow (down one column and on into the next), while Left
-// and Right change the focused setting's value.
+// and Right change the focused setting's value. A screen can have several (a list and a column of settings); past either
+// end of one, the screen can scroll its list (OnOrderEnd), else the focus goes on to the nearest button that way.
+// While a text field is being typed into, the controls are left to it; Select or Back on the joystick stops the typing.
 internal abstract class MenuScreen
 {
     private const float FadeSeconds = 0.12f;
@@ -17,7 +19,8 @@ internal abstract class MenuScreen
     private readonly List<MenuButton> _buttons = new();
     private readonly CanvasGroup _group;
     private MenuButton? _focused;
-    private List<MenuButton>? _order;
+    private readonly List<List<MenuButton>> _orders = new();
+    private ICollection<MenuButton>? _modal;
     private bool _active;
 
     protected MenuScreen(RectTransform canvas, string name)
@@ -61,6 +64,11 @@ internal abstract class MenuScreen
 
         OnTick();
         if (MenuInput.IsRebinding) return;
+        if (MenuField.Typing)
+        {
+            if (MenuInput.PressedOn(MenuCommand.Select, MenuDevice.Joystick) || MenuInput.PressedOn(MenuCommand.Back, MenuDevice.Joystick)) MenuField.StopTyping();
+            return;
+        }
 
         if (MenuInput.Pressed(MenuCommand.Up)) Step(Vector2.up);
         if (MenuInput.Pressed(MenuCommand.Down)) Step(Vector2.down);
@@ -85,9 +93,27 @@ internal abstract class MenuScreen
         if (_focused == button) _focused = null;
     }
 
-    protected void SetOrder(List<MenuButton>? order) => _order = order;
+    protected void SetOrder(List<MenuButton>? order)
+    {
+        _orders.Clear();
+        if (order != null) _orders.Add(order);
+    }
+
+    protected void SetOrders(params List<MenuButton>[] orders)
+    {
+        _orders.Clear();
+        _orders.AddRange(orders);
+    }
 
     protected MenuButton? Focused => _focused;
+
+    // Only these take the focus while set: a popup over the screen (which blocks the pointer itself).
+    protected void SetModal(ICollection<MenuButton>? buttons, MenuButton? focus)
+    {
+        _modal = buttons;
+        if (focus != null) Focus(focus, sound: false);
+        else if (_focused != null && !Usable(_focused)) Focus(FirstFocus(), sound: false);
+    }
 
     protected void Focus(MenuButton? button, bool sound)
     {
@@ -129,6 +155,10 @@ internal abstract class MenuScreen
     // True when it went somewhere, for the sound.
     protected virtual bool OnBack() => false;
 
+    // Up or Down (step -1 or 1) past the end of an order; true when the screen took it (scrolled its list, or keeps the
+    // focus where it is), false to go on to the nearest button that way.
+    protected virtual bool OnOrderEnd(List<MenuButton> order, int step) => false;
+
     protected virtual void OnTab(int direction)
     {
     }
@@ -153,19 +183,19 @@ internal abstract class MenuScreen
                 return;
             }
 
-            var index = direction.y != 0f && _order != null ? _order.IndexOf(_focused) : -1;
-            if (index >= 0)
+            var order = direction.y != 0f ? _orders.Find(candidate => candidate.Contains(_focused)) : null;
+            if (order != null)
             {
                 var step = direction.y > 0f ? -1 : 1;
-                for (var next = index + step; next >= 0 && next < _order!.Count; next += step)
+                for (var next = order.IndexOf(_focused) + step; next >= 0 && next < order.Count; next += step)
                 {
-                    if (!Usable(_order[next])) continue;
+                    if (!Usable(order[next])) continue;
 
-                    Focus(_order[next], sound: true);
+                    Focus(order[next], sound: true);
                     return;
                 }
 
-                return;
+                if (OnOrderEnd(order, step)) return;
             }
         }
 
@@ -205,6 +235,6 @@ internal abstract class MenuScreen
     private Vector2 Center(MenuButton button) =>
         Root.InverseTransformPoint(button.Rect.TransformPoint(button.Rect.rect.center));
 
-    private static bool Usable(MenuButton button) =>
-        button != null && button.gameObject.activeInHierarchy && button.interactable;
+    private bool Usable(MenuButton button) =>
+        button != null && button.gameObject.activeInHierarchy && button.interactable && (_modal == null || _modal.Contains(button));
 }

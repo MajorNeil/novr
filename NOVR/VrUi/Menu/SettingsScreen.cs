@@ -145,6 +145,9 @@ internal sealed class SettingsScreen : MenuScreen
 
     protected override MenuButton? FirstFocus() => _tabButtons[_tab];
 
+    // The rows end there; the categories are Back away.
+    protected override bool OnOrderEnd(List<MenuButton> order, int step) => true;
+
     protected override bool OnBack()
     {
         var focused = Focused;

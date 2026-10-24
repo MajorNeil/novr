@@ -36,6 +36,9 @@ public class NativeVrUiRoot : NOVRBehaviour
     private MainMenuScreen? _mainMenu;
     private MenuControlsScreen? _menuControls;
     private SettingsScreen? _settingsScreen;
+    private SinglePlayerScreen? _singlePlayerScreen;
+    private MultiplayerScreen? _multiplayerScreen;
+    private WorkshopScreen? _workshopScreen;
     private bool _menuScreensFailed;
     private bool _loggedMenuScreenError;
     private NativeMultiplayerPanel? _multiplayerPanel;
@@ -120,12 +123,13 @@ public class NativeVrUiRoot : NOVRBehaviour
                                                   Time.unscaledTime - _singlePlayerMissionPickerRequestTime < RequestedMenuTransitionSeconds;
         var waitingForMultiplayer = _multiplayerRequested &&
                                     Time.unscaledTime - _multiplayerRequestTime < RequestedMenuTransitionSeconds;
+        // Not over the game's own Customize Mission screen, which shows instead until it goes back to the missions.
         var shouldShowSinglePlayerMissionPicker = _singlePlayerMissionPickerRequested &&
                                                   !controlMapperOpen &&
                                                   mainCanvasActive &&
                                                   (waitingForSinglePlayerMissionPicker ||
-                                                   !topLevelMainMenuAvailable ||
-                                                   IsMissionPickerAvailable());
+                                                   IsMissionPickerAvailable() ||
+                                                   (!topLevelMainMenuAvailable && !IsCustomizeMissionOpen()));
         var shouldShowMultiplayer = _multiplayerRequested &&
                                     !controlMapperOpen &&
                                     mainCanvasActive &&
@@ -188,10 +192,10 @@ public class NativeVrUiRoot : NOVRBehaviour
         _menuControls?.SetVisible(shouldShowMenuControls);
         _settingsScreen?.SetVisible(shouldShowSettingsScreen);
         _mainMenuShell?.SetVisible(shouldShowMainMenu);
-        _multiplayerPanel?.SetVisible(shouldShowMultiplayer);
-        _singlePlayerMissionPanel?.SetVisible(shouldShowSinglePlayerMissionPicker);
+        ShowMultiplayer(shouldShowMultiplayer);
+        ShowSinglePlayer(shouldShowSinglePlayerMissionPicker);
         _settingsPanel?.SetVisible(shouldShowSettings);
-        _workshopPanel?.SetVisible(shouldShowWorkshop);
+        ShowWorkshop(shouldShowWorkshop);
         _vrUiSettingsPanel?.SetVisible(shouldShowVrUiSettings);
 
         var shouldShowNativeUi = shouldShowMainMenu || shouldShowSinglePlayerMissionPicker || shouldShowMultiplayer || shouldShowSettings || shouldShowWorkshop || shouldShowVrUiSettings || shouldShowMenuControls || shouldShowSettingsScreen;
@@ -289,6 +293,9 @@ public class NativeVrUiRoot : NOVRBehaviour
                     RecenterMenu, () => _recenterPending ? _pendingRecenterTime - Time.unscaledTime : 0f);
                 _menuControls = new MenuControlsScreen(rectTransform, CloseMenuControls);
                 _settingsScreen = new SettingsScreen(rectTransform, CloseSettingsScreen, () => OpenMenuControls(fromSettings: true), OpenKeyBindings, RecenterMenu);
+                _singlePlayerScreen = TryBuild("single player", () => new SinglePlayerScreen(rectTransform, _actions));
+                _multiplayerScreen = TryBuild("multiplayer", () => new MultiplayerScreen(rectTransform, _actions));
+                _workshopScreen = TryBuild("workshop", () => new WorkshopScreen(rectTransform, _actions));
                 return;
             }
             catch (Exception exception)
@@ -309,7 +316,22 @@ public class NativeVrUiRoot : NOVRBehaviour
         _mainMenuShell.SetOriginalMainCanvas(_mainCanvas);
     }
 
-    private bool MenuScreensVisible => _mainMenu?.Visible == true || _menuControls?.Visible == true || _settingsScreen?.Visible == true;
+    // One of the screens the main menu leads to; its earlier panel stands in when it can't be built.
+    private static T? TryBuild<T>(string name, Func<T> build) where T : MenuScreen
+    {
+        try
+        {
+            return build();
+        }
+        catch (Exception exception)
+        {
+            Debug.LogWarning($"[NOVR] Could not build the new {name} screen, using the earlier one: {exception}");
+            return null;
+        }
+    }
+
+    private bool MenuScreensVisible => _mainMenu?.Visible == true || _menuControls?.Visible == true || _settingsScreen?.Visible == true ||
+                                       _singlePlayerScreen?.Visible == true || _multiplayerScreen?.Visible == true || _workshopScreen?.Visible == true;
 
     private void TickMenuScreens()
     {
@@ -319,6 +341,9 @@ public class NativeVrUiRoot : NOVRBehaviour
             _mainMenu?.Tick();
             _menuControls?.Tick();
             _settingsScreen?.Tick();
+            _singlePlayerScreen?.Tick();
+            _multiplayerScreen?.Tick();
+            _workshopScreen?.Tick();
         }
         catch (Exception exception)
         {
@@ -351,6 +376,44 @@ public class NativeVrUiRoot : NOVRBehaviour
         _mainMenu?.SetVisible(false);
         _menuControls?.SetVisible(false);
         _settingsScreen?.SetVisible(false);
+    }
+
+    // The new screens once the new menus are built, else the earlier panels.
+    private void ShowSinglePlayer(bool visible)
+    {
+        var shown = TrySetVisible(ref _singlePlayerScreen, visible, "single player");
+        _singlePlayerMissionPanel?.SetVisible(visible && !shown);
+    }
+
+    private void ShowMultiplayer(bool visible)
+    {
+        var shown = TrySetVisible(ref _multiplayerScreen, visible, "multiplayer");
+        _multiplayerPanel?.SetVisible(visible && !shown);
+    }
+
+    private void ShowWorkshop(bool visible)
+    {
+        var shown = TrySetVisible(ref _workshopScreen, visible, "workshop");
+        _workshopPanel?.SetVisible(visible && !shown);
+    }
+
+    // False when there is no screen, or it failed and is dropped for its earlier panel.
+    private static bool TrySetVisible<T>(ref T? screen, bool visible, string name) where T : MenuScreen
+    {
+        if (screen == null) return false;
+
+        try
+        {
+            screen.SetVisible(visible);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            Debug.LogWarning($"[NOVR] The new {name} screen failed, using the earlier one: {exception}");
+            screen.Root.gameObject.SetActive(false);
+            screen = null;
+            return false;
+        }
     }
 
     private void ClearMenuRequests()
@@ -856,6 +919,18 @@ public class NativeVrUiRoot : NOVRBehaviour
         return false;
     }
 
+    private bool IsCustomizeMissionOpen()
+    {
+        if (_mainCanvas == null) return false;
+
+        foreach (var menu in _mainCanvas.GetComponentsInChildren<global::CustomizeMissionMenu>(true))
+        {
+            if (menu.gameObject.activeInHierarchy) return true;
+        }
+
+        return false;
+    }
+
     private bool IsMultiplayerMenuAvailable()
     {
         if (_mainCanvas == null) return false;
@@ -959,10 +1034,10 @@ public class NativeVrUiRoot : NOVRBehaviour
         }
 
         HideMenuScreens();
-        _multiplayerPanel?.SetVisible(false);
-        _singlePlayerMissionPanel?.SetVisible(false);
+        ShowMultiplayer(false);
+        ShowSinglePlayer(false);
         _settingsPanel?.SetVisible(false);
-        _workshopPanel?.SetVisible(false);
+        ShowWorkshop(false);
         _vrUiSettingsPanel?.SetVisible(true);
         SuppressOriginalMainCanvas(true);
     }
@@ -981,10 +1056,10 @@ public class NativeVrUiRoot : NOVRBehaviour
         }
 
         HideMenuScreens();
-        _multiplayerPanel?.SetVisible(false);
-        _singlePlayerMissionPanel?.SetVisible(true);
+        ShowMultiplayer(false);
+        ShowSinglePlayer(true);
         _settingsPanel?.SetVisible(false);
-        _workshopPanel?.SetVisible(false);
+        ShowWorkshop(false);
         _vrUiSettingsPanel?.SetVisible(false);
         SuppressOriginalMainCanvas(true);
     }
@@ -997,10 +1072,10 @@ public class NativeVrUiRoot : NOVRBehaviour
         }
 
         HideMenuScreens();
-        _multiplayerPanel?.SetVisible(true);
-        _singlePlayerMissionPanel?.SetVisible(false);
+        ShowMultiplayer(true);
+        ShowSinglePlayer(false);
         _settingsPanel?.SetVisible(false);
-        _workshopPanel?.SetVisible(false);
+        ShowWorkshop(false);
         _vrUiSettingsPanel?.SetVisible(false);
         SuppressOriginalMainCanvas(true);
     }
@@ -1013,10 +1088,10 @@ public class NativeVrUiRoot : NOVRBehaviour
         }
 
         HideMenuScreens();
-        _multiplayerPanel?.SetVisible(false);
-        _singlePlayerMissionPanel?.SetVisible(false);
+        ShowMultiplayer(false);
+        ShowSinglePlayer(false);
         _settingsPanel?.SetVisible(false);
-        _workshopPanel?.SetVisible(true);
+        ShowWorkshop(true);
         _vrUiSettingsPanel?.SetVisible(false);
         SuppressOriginalMainCanvas(true);
     }
