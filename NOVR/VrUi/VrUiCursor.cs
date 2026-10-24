@@ -9,7 +9,7 @@ using UnityEngine.UI;
 namespace NOVR.VrUi;
 
 [DefaultExecutionOrder(-1000)]
-public class VrUiCursor: NOVRBehaviour
+public partial class VrUiCursor: NOVRBehaviour
 {
     public static VrUiCursor? Instance { get; private set; }
     public static VrUiCursor? I => Instance;
@@ -202,7 +202,7 @@ public class VrUiCursor: NOVRBehaviour
         var screenPoint = GetScreenPoint();
 
         ushort buttons = 0;
-        if (realMouse.leftButton.isPressed || _selectHeld) buttons |= 1;
+        if (realMouse.leftButton.isPressed || _selectHeld || _navClickHeld) buttons |= 1;
         if (realMouse.rightButton.isPressed) buttons |= 2;
         if (realMouse.middleButton.isPressed) buttons |= 4;
 
@@ -251,6 +251,8 @@ public class VrUiCursor: NOVRBehaviour
             worldDirection = AimAtSnapTarget(camera, worldDirection);
         }
 
+        worldDirection = HoldNavigation(mouse, worldDirection);
+
         Vector2 inScreenSpace = ToEventScreenPoint(camera, camera.transform.position + worldDirection * DefaultProjectionDistance);
         float cursorDistance = GetDistanceUnderCursor(inScreenSpace);
         _cursorDirection = worldDirection;
@@ -286,7 +288,7 @@ public class VrUiCursor: NOVRBehaviour
 
         _gazeDriving = true;
         // Held still while clicking, so the eyes moving on before the button is released don't drag a list instead.
-        if (wasGazeDriving && (_selectHeld || mouse.leftButton.isPressed))
+        if (wasGazeDriving && (_selectHeld || _navClickHeld || mouse.leftButton.isPressed))
         {
             _gazeHeldForClick = true;
             return _cursorDirection;
@@ -421,6 +423,25 @@ public class VrUiCursor: NOVRBehaviour
     private void CollectSnapCandidates(Vector3 origin, Vector3 gazeDirection, float maxDegrees)
     {
         _snapCandidates.Clear();
+        var count = FillSelectableBuffer();
+        for (var i = 0; i < count; i++)
+        {
+            AddSnapCandidate(_selectableBuffer[i], origin, gazeDirection, maxDegrees);
+        }
+
+        System.Array.Clear(_selectableBuffer, 0, count);
+
+        foreach (var icon in GetClickableAirbaseIcons())
+        {
+            AddSnapCandidate(icon, origin, gazeDirection, maxDegrees);
+        }
+
+        _snapCandidates.Sort((a, b) => a.OutsideDegrees.CompareTo(b.OutsideDegrees));
+    }
+
+    // Every Selectable into _selectableBuffer (cleared by the caller), with the canvas cache IsSnappable reads kept fresh.
+    private int FillSelectableBuffer()
+    {
         if (Time.unscaledTime >= _snapCanvasCacheClearTime)
         {
             _snapCanvasCache.Clear();
@@ -432,29 +453,21 @@ public class VrUiCursor: NOVRBehaviour
             _selectableBuffer = new Selectable[Mathf.NextPowerOfTwo(Selectable.allSelectableCount)];
         }
 
-        var count = Selectable.AllSelectablesNoAlloc(_selectableBuffer);
-        for (var i = 0; i < count; i++)
+        return Selectable.AllSelectablesNoAlloc(_selectableBuffer);
+    }
+
+    // The airbases on the map, while it is open to pick where to spawn.
+    private global::AirbaseMapIcon[] GetClickableAirbaseIcons()
+    {
+        if (!global::DynamicMap.mapMaximized) return System.Array.Empty<global::AirbaseMapIcon>();
+
+        if (Time.unscaledTime >= _nextAirbaseIconSearchTime)
         {
-            AddSnapCandidate(_selectableBuffer[i], origin, gazeDirection, maxDegrees);
+            _airbaseIcons = FindObjectsOfType<global::AirbaseMapIcon>();
+            _nextAirbaseIconSearchTime = Time.unscaledTime + AirbaseIconSearchSeconds;
         }
 
-        System.Array.Clear(_selectableBuffer, 0, count);
-
-        if (global::DynamicMap.mapMaximized)
-        {
-            if (Time.unscaledTime >= _nextAirbaseIconSearchTime)
-            {
-                _airbaseIcons = FindObjectsOfType<global::AirbaseMapIcon>();
-                _nextAirbaseIconSearchTime = Time.unscaledTime + AirbaseIconSearchSeconds;
-            }
-
-            foreach (var icon in _airbaseIcons)
-            {
-                AddSnapCandidate(icon, origin, gazeDirection, maxDegrees);
-            }
-        }
-
-        _snapCandidates.Sort((a, b) => a.OutsideDegrees.CompareTo(b.OutsideDegrees));
+        return _airbaseIcons;
     }
 
     private void AddSnapCandidate(Component target, Vector3 origin, Vector3 gazeDirection, float maxDegrees)
@@ -750,12 +763,13 @@ public class VrUiCursor: NOVRBehaviour
     {
         if (_cursor == null || _cursorImage == null) return;
 
-        if (realMouse.leftButton.wasPressedThisFrame || _selectPressedThisFrame)
+        if (realMouse.leftButton.wasPressedThisFrame || _selectPressedThisFrame || _navClickPressedThisFrame)
         {
             _lastCursorClickTime = Time.unscaledTime;
         }
 
-        var isPressed = realMouse.leftButton.isPressed || _selectHeld;
+        _navClickPressedThisFrame = false;
+        var isPressed = realMouse.leftButton.isPressed || _selectHeld || _navClickHeld;
         var idlePulse = Mathf.Sin(Time.unscaledTime * CursorIdlePulseSpeed) * CursorIdlePulseScale;
         var clickProgress = Mathf.Clamp01((Time.unscaledTime - _lastCursorClickTime) / CursorClickPulseDuration);
         var clickPulse = clickProgress < 1f

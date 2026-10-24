@@ -64,6 +64,8 @@ internal static class MenuInput
     private static readonly string[] BoundJoystick = new string[Commands.Length];
     private static readonly string[] BoundPath = new string[Commands.Length];
     private static readonly bool[] Fired = new bool[Commands.Length];
+    // The kind of device the press that is firing or held came from.
+    private static readonly MenuDevice[] FiredOn = new MenuDevice[Commands.Length];
     private static readonly bool[] Held = new bool[Commands.Length];
     private static readonly float[] NextRepeat = new float[Commands.Length];
     private static InputActionMap? _map;
@@ -181,6 +183,7 @@ internal static class MenuInput
                     Fired[index] = true;
                     Held[index] = true;
                     NextRepeat[index] = now + RepeatDelaySeconds;
+                    FiredOn[index] = device;
                     LastDevice = device;
                 }
                 else if (!action.IsPressed() && (stick == null || !StickButton(stick, BoundButton[index], down: false)))
@@ -215,6 +218,12 @@ internal static class MenuInput
     }
 
     public static bool Pressed(MenuCommand command) => Fired[(int)command];
+
+    // Pressed, by that kind of device.
+    public static bool PressedOn(MenuCommand command, MenuDevice device) => Fired[(int)command] && FiredOn[(int)command] == device;
+
+    // Held down since a press on that kind of device.
+    public static bool HeldOn(MenuCommand command, MenuDevice device) => Held[(int)command] && FiredOn[(int)command] == device;
 
     public static string GetPath(MenuCommand command, MenuDevice device) =>
         ReadSlots(ConfigFor(command)?.Value ?? DefaultBindings(command))[(int)device];

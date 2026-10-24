@@ -99,7 +99,7 @@ public class NativeVrUiRoot : NOVRBehaviour
 
         if (!IsNativeMenuUiEnabled)
         {
-            MenuInput.Release();
+            TickMenuNavigation(screensVisible: false);
             RestoreOriginalMainCanvas();
             if (_root != null)
             {
@@ -315,15 +315,7 @@ public class NativeVrUiRoot : NOVRBehaviour
     {
         try
         {
-            if (MenuScreensVisible)
-            {
-                MenuInput.Update();
-            }
-            else
-            {
-                MenuInput.Release();
-            }
-
+            TickMenuNavigation(MenuScreensVisible);
             _mainMenu?.Tick();
             _menuControls?.Tick();
             _settingsScreen?.Tick();
@@ -334,6 +326,23 @@ public class NativeVrUiRoot : NOVRBehaviour
             _loggedMenuScreenError = true;
             NOVRPlugin.Log.LogWarning($"[NOVR] Menu screen error: {exception}");
         }
+    }
+
+    // The menu controls are read while one of NOVR's menu screens is up, and while the cursor is on another menu out of
+    // flight, where their joystick part moves it (MenuNavigation).
+    private static void TickMenuNavigation(bool screensVisible)
+    {
+        var navigating = !screensVisible && MenuNavigation.Wanted;
+        if (screensVisible || navigating)
+        {
+            MenuInput.Update();
+        }
+        else
+        {
+            MenuInput.Release();
+        }
+
+        MenuNavigation.Tick(navigating);
     }
 
     private void HideMenuScreens()
