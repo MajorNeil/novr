@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using Cysharp.Threading.Tasks;
-using NOVR.VrUi.Native;
 using NuclearOption.ModScripts;
 using NuclearOption.Workshop;
 using TMPro;
@@ -14,7 +13,8 @@ namespace NOVR.VrUi.Menu;
 // beside it the Order and Search rows, the items as rows, and the Page row. The focused item is described on the right
 // with its picture; Select on it opens Subscribe (or Unsubscribe), its Steam page and its files. Steam gives fifty a page.
 // Typing in Search narrows the page shown, and Enter asks Steam for everything that matches. It all goes through the
-// game's own SteamWorkshop, as NativeWorkshopPanel did.
+// game's own SteamWorkshop, as NativeWorkshopPanel did; it opens from the main menu without the game's Workshop menu,
+// which has nothing it needs.
 internal sealed class WorkshopScreen : RailScreen
 {
     private const int ListRows = 8;
@@ -34,7 +34,7 @@ internal sealed class WorkshopScreen : RailScreen
         Liveries
     }
 
-    private readonly NativeGameActionAdapter _actions;
+    private readonly Action _close;
     private readonly SteamWorkshop _workshop;
     private readonly List<SteamWorkshopItem> _items = new();
     private readonly List<SteamWorkshopItem> _shown = new();
@@ -56,9 +56,9 @@ internal sealed class WorkshopScreen : RailScreen
     private CancellationTokenSource? _previewCancellation;
     private CancellationTokenSource? _popupPreviewCancellation;
 
-    public WorkshopScreen(RectTransform canvas, NativeGameActionAdapter actions) : base(canvas, "NOVR Workshop", "WORKSHOP")
+    public WorkshopScreen(RectTransform canvas, Action close) : base(canvas, "NOVR Workshop", "WORKSHOP")
     {
-        _actions = actions;
+        _close = close;
         _workshop = canvas.TryGetComponent<SteamWorkshop>(out var workshop) ? workshop : canvas.gameObject.AddComponent<SteamWorkshop>();
 
         _tabButtons[Tab.Missions] = AddRailButton("MISSIONS", () => SetTab(Tab.Missions));
@@ -118,10 +118,7 @@ internal sealed class WorkshopScreen : RailScreen
         MenuSounds.Move();
     }
 
-    protected override void Leave()
-    {
-        if (!_actions.TryCloseWorkshopMenu()) _actions.TryInvokeCurrentMenuButton("Back", "< BACK", "BACK", "MenuExit_Button");
-    }
+    protected override void Leave() => _close();
 
     protected override void Describe(Section section, MenuButton? row, int entry)
     {

@@ -36,7 +36,7 @@ internal sealed class MainMenuScreen : MenuScreen
     private MenuDevice _promptDevice = (MenuDevice)(-1);
 
     public MainMenuScreen(RectTransform canvas, NativeGameActionAdapter actions, Func<GameObject?> mainCanvas,
-        Action<SettingsScreen.Tab> openSettings, Action openMenuControls, Action recenter, Func<float> recenterSeconds)
+        Action<SettingsScreen.Tab> openSettings, Action openMenuControls, Action openWorkshop, Action recenter, Func<float> recenterSeconds)
         : base(canvas, "NOVR Main Menu")
     {
         _actions = actions;
@@ -54,7 +54,9 @@ internal sealed class MainMenuScreen : MenuScreen
         AddPrimary(rail, "MULTIPLAYER", NativeGameAction.Multiplayer, ref y);
         if (actions.HasMainMenuButton(NativeGameAction.MissionEditor)) AddPrimary(rail, "MISSION EDITOR", NativeGameAction.MissionEditor, ref y);
         AddPrimary(rail, "ENCYCLOPEDIA", NativeGameAction.Encyclopedia, ref y);
-        AddPrimary(rail, "WORKSHOP", NativeGameAction.Workshop, ref y);
+        // NOVR's own, without the game's behind it (it has nothing the Workshop screen needs).
+        Add(MenuKit.Button(rail, "WORKSHOP", "WORKSHOP", new Vector2(0f, y), new Vector2(ButtonWidth, PrimaryHeight), openWorkshop));
+        y -= PrimaryStep;
         Add(MenuKit.Button(rail, "SETTINGS", "SETTINGS", new Vector2(0f, y), new Vector2(ButtonWidth, PrimaryHeight),
             () => openSettings(SettingsScreen.Tab.Audio)));
         y -= PrimaryStep;

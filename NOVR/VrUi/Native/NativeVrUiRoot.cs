@@ -6,6 +6,7 @@ using NuclearOption.Networking.Lobbies;
 using NuclearOption.Workshop;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
 namespace NOVR.VrUi.Native;
@@ -70,6 +71,7 @@ public class NativeVrUiRoot : NOVRBehaviour
     private bool _menuControlsFromSettings;
     private bool _settingsScreenOpen;
     private bool _keyBindingsOpen;
+    private bool _workshopScreenOpen;
     private bool _anchorAtSeat;
     private float _nextMainMenuScanTime;
     private float _pendingRecenterTime;
@@ -153,6 +155,10 @@ public class NativeVrUiRoot : NOVRBehaviour
                                  (waitingForWorkshop ||
                                   !topLevelMainMenuAvailable ||
                                   IsWorkshopMenuAvailable());
+        var shouldShowWorkshopScreen = _workshopScreenOpen &&
+                                       !controlMapperOpen &&
+                                       mainCanvasActive &&
+                                       topLevelMainMenuAvailable;
         var shouldShowVrUiSettings = _vrUiSettingsOpen &&
                                      !controlMapperOpen &&
                                      mainCanvasActive &&
@@ -183,7 +189,9 @@ public class NativeVrUiRoot : NOVRBehaviour
                                  !shouldShowMenuControls &&
                                  !shouldShowSettingsScreen &&
                                  !shouldShowKeyBindings &&
-                                 !_keyBindingsOpen;
+                                 !_keyBindingsOpen &&
+                                 !shouldShowWorkshopScreen &&
+                                 !_workshopScreenOpen;
 
         if (shouldShowMainMenu)
         {
@@ -195,6 +203,7 @@ public class NativeVrUiRoot : NOVRBehaviour
             _menuControlsOpen = false;
             _settingsScreenOpen = false;
             _keyBindingsOpen = false;
+            _workshopScreenOpen = false;
             EnsureMenuScreens();
         }
 
@@ -212,10 +221,10 @@ public class NativeVrUiRoot : NOVRBehaviour
         ShowMultiplayer(shouldShowMultiplayer);
         ShowSinglePlayer(shouldShowSinglePlayerMissionPicker);
         _settingsPanel?.SetVisible(shouldShowSettings);
-        ShowWorkshop(shouldShowWorkshop);
+        ShowWorkshop(shouldShowWorkshop || shouldShowWorkshopScreen);
         _vrUiSettingsPanel?.SetVisible(shouldShowVrUiSettings);
 
-        var shouldShowNativeUi = shouldShowMainMenu || shouldShowSinglePlayerMissionPicker || shouldShowMultiplayer || shouldShowSettings || shouldShowWorkshop || shouldShowVrUiSettings || shouldShowMenuControls || shouldShowSettingsScreen || shouldShowKeyBindings;
+        var shouldShowNativeUi = shouldShowMainMenu || shouldShowSinglePlayerMissionPicker || shouldShowMultiplayer || shouldShowSettings || shouldShowWorkshop || shouldShowVrUiSettings || shouldShowMenuControls || shouldShowSettingsScreen || shouldShowKeyBindings || shouldShowWorkshopScreen;
         TickMenuScreens();
         HandleRecenterShortcut(shouldShowNativeUi);
         UpdatePlacement(shouldShowNativeUi);
@@ -307,19 +316,19 @@ public class NativeVrUiRoot : NOVRBehaviour
             {
                 MenuStyle.Capture(_mainCanvas);
                 _mainMenu = new MainMenuScreen(rectTransform, _actions, () => _mainCanvas, OpenSettingsScreen, () => OpenMenuControls(fromSettings: false),
-                    RecenterMenu, () => _recenterPending ? _pendingRecenterTime - Time.unscaledTime : 0f);
+                    OpenWorkshopScreen, RecenterMenu, () => _recenterPending ? _pendingRecenterTime - Time.unscaledTime : 0f);
                 _menuControls = new MenuControlsScreen(rectTransform, CloseMenuControls);
                 _settingsScreen = new SettingsScreen(rectTransform, CloseSettingsScreen, () => OpenMenuControls(fromSettings: true), OpenKeyBindingsScreen, RecenterMenu);
                 _keyBindings = TryBuild("key bindings", () => new KeyBindingsScreen(rectTransform, CloseKeyBindingsScreen, OpenKeyBindings));
                 _singlePlayerScreen = TryBuild("single player", () => new SinglePlayerScreen(rectTransform, _actions));
                 _multiplayerScreen = TryBuild("multiplayer", () => new MultiplayerScreen(rectTransform, _actions));
-                _workshopScreen = TryBuild("workshop", () => new WorkshopScreen(rectTransform, _actions));
+                _workshopScreen = TryBuild("workshop", () => new WorkshopScreen(rectTransform, CloseWorkshopScreen));
                 return;
             }
             catch (Exception exception)
             {
                 _menuScreensFailed = true;
-                Debug.LogWarning($"[NOVR] Could not build the new main menu, using the earlier one: {exception}");
+                NOVRPlugin.Log.LogWarning($"[NOVR] Could not build the new main menu, using the earlier one: {exception}");
                 if (_mainMenu != null) Destroy(_mainMenu.Root.gameObject);
                 if (_menuControls != null) Destroy(_menuControls.Root.gameObject);
                 if (_settingsScreen != null) Destroy(_settingsScreen.Root.gameObject);
@@ -343,7 +352,7 @@ public class NativeVrUiRoot : NOVRBehaviour
         }
         catch (Exception exception)
         {
-            Debug.LogWarning($"[NOVR] Could not build the new {name} screen, using the earlier one: {exception}");
+            NOVRPlugin.Log.LogWarning($"[NOVR] Could not build the new {name} screen, using the earlier one: {exception}");
             return null;
         }
     }
@@ -414,7 +423,16 @@ public class NativeVrUiRoot : NOVRBehaviour
 
     private void ShowWorkshop(bool visible)
     {
+        var hadScreen = _workshopScreen != null;
         var shown = TrySetVisible(ref _workshopScreen, visible, "workshop");
+        if (hadScreen && !shown && _workshopScreenOpen)
+        {
+            // It failed: the game's Workshop menu with the earlier panel over it, as before.
+            _workshopScreenOpen = false;
+            _actions.TryInvoke(NativeGameAction.Workshop);
+            return;
+        }
+
         _workshopPanel?.SetVisible(visible && !shown);
     }
 
@@ -430,7 +448,7 @@ public class NativeVrUiRoot : NOVRBehaviour
         }
         catch (Exception exception)
         {
-            Debug.LogWarning($"[NOVR] The new {name} screen failed, using the earlier one: {exception}");
+            NOVRPlugin.Log.LogWarning($"[NOVR] The new {name} screen failed, using the earlier one: {exception}");
             screen.Root.gameObject.SetActive(false);
             screen = null;
             return false;
@@ -445,6 +463,7 @@ public class NativeVrUiRoot : NOVRBehaviour
         _workshopRequested = false;
         _vrUiSettingsOpen = false;
         _keyBindingsOpen = false;
+        _workshopScreenOpen = false;
     }
 
     private void OpenMenuControls(bool fromSettings)
@@ -506,6 +525,85 @@ public class NativeVrUiRoot : NOVRBehaviour
     {
         _keyBindingsOpen = false;
         _keyBindings?.SetVisible(false);
+    }
+
+    // NOVR's Workshop screen, straight from the main menu; through the game's Workshop menu when it isn't built.
+    private void OpenWorkshopScreen()
+    {
+        if (_workshopScreen == null)
+        {
+            _actions.TryInvoke(NativeGameAction.Workshop);
+            return;
+        }
+
+        ClearMenuRequests();
+        _workshopScreenOpen = true;
+        HideMenuScreens();
+        ShowWorkshop(true);
+        SuppressOriginalMainCanvas(true);
+    }
+
+    private void CloseWorkshopScreen()
+    {
+        _workshopScreenOpen = false;
+        ShowWorkshop(false);
+    }
+
+    // The game loads a scene of its own for its single player and multiplayer menus, and for the main menu again, each
+    // with a new MainCanvas. It is taken over here, before the first frame draws it, rather than at the next scan, which
+    // left the game's flat menu showing for a moment. Arriving there some other way (back from a multiplayer game) opens
+    // NOVR's screen for it too.
+    protected override void OnEnable()
+    {
+        base.OnEnable();
+        SceneManager.sceneLoaded += OnSceneLoaded;
+    }
+
+    protected override void OnDisable()
+    {
+        SceneManager.sceneLoaded -= OnSceneLoaded;
+        base.OnDisable();
+    }
+
+    private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+    {
+        try
+        {
+            var singlePlayer = scene.name == "MissionsMenu";
+            var multiplayer = scene.name == "MultiplayerMenu";
+            if (!IsNativeMenuUiEnabled || !singlePlayer && !multiplayer && scene.name != "MainMenu") return;
+
+            var mainCanvas = FindMainCanvas(scene);
+            if (mainCanvas == null) return;
+
+            if (mainCanvas != _mainCanvas)
+            {
+                RestoreOriginalMainCanvas();
+                _mainCanvas = mainCanvas;
+                _actions.SetOriginalMainCanvas(_mainCanvas);
+                _mainMenuShell?.SetOriginalMainCanvas(_mainCanvas);
+            }
+
+            if (singlePlayer && !_singlePlayerMissionPickerRequested)
+            {
+                ClearMenuRequests();
+                _singlePlayerMissionPickerRequested = true;
+                _singlePlayerMissionPickerRequestTime = Time.unscaledTime;
+            }
+
+            if (multiplayer && !_multiplayerRequested)
+            {
+                ClearMenuRequests();
+                _multiplayerRequested = true;
+                _multiplayerRequestTime = Time.unscaledTime;
+            }
+
+            SuppressOriginalMainCanvas(true);
+        }
+        catch (Exception exception)
+        {
+            NOVRPlugin.Log.LogWarning($"[NOVR] Could not take over the menu scene '{scene.name}': {exception.Message}");
+        }
     }
 
     // The game's own binding screen, over the hangar; the settings come back when it closes.
@@ -931,6 +1029,17 @@ public class NativeVrUiRoot : NOVRBehaviour
         _mainCanvas = mainCanvas;
         _actions.SetOriginalMainCanvas(_mainCanvas);
         _mainMenuShell?.SetOriginalMainCanvas(_mainCanvas);
+    }
+
+    // The one in that scene, not the one of the scene it replaces.
+    private static GameObject? FindMainCanvas(Scene scene)
+    {
+        foreach (var gameObject in Resources.FindObjectsOfTypeAll<GameObject>())
+        {
+            if (gameObject.name == "MainCanvas" && gameObject.scene == scene && gameObject.GetComponent<Canvas>() != null) return gameObject;
+        }
+
+        return null;
     }
 
     private static GameObject? FindMainCanvas()
