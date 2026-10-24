@@ -21,7 +21,7 @@ namespace NOVR;
 [BepInPlugin(
     "deltawing.novr",
     "NOVR",
-    "0.4.25")]
+    "0.4.26")]
 public class NOVRPlugin : BaseUnityPlugin
 {
     

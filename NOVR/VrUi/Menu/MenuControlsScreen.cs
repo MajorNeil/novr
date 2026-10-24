@@ -7,7 +7,7 @@ namespace NOVR.VrUi.Menu;
 
 // Sets the controls of NOVR's menus (MenuInput): a row per command with its keyboard, gamepad and joystick binding.
 // Activating a box listens for the next key or button on that kind of device; Escape gives up and Delete clears it.
-// Which joysticks Unity sees is shown at the top, since a stick it doesn't see can't be bound.
+// Which joysticks the game has is shown at the top, since those are the ones that can be bound.
 internal sealed class MenuControlsScreen : MenuScreen
 {
     private const float NameX = -520f;
@@ -121,7 +121,7 @@ internal sealed class MenuControlsScreen : MenuScreen
         var joysticks = MenuInput.JoystickNames();
         var noisy = MenuInput.NoisyNames();
         _status.text = joysticks.Length == 0
-            ? "No joystick seen. A stick Unity doesn't see can't be bound here."
+            ? "No joystick seen. Sticks the game flies with can be bound here."
             : noisy.Length > 0
                 ? $"Ignored, as they press by themselves: {noisy}."
                 : $"Joysticks: {joysticks}. Bind your stick's hat and a button in the joystick column.";

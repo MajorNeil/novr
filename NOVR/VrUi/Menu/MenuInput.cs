@@ -1,9 +1,13 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Reflection;
 using System.Text;
 using BepInEx.Configuration;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using RewiredJoystick = Rewired.Joystick;
 
 namespace NOVR.VrUi.Menu;
 
@@ -28,46 +32,66 @@ public enum MenuDevice
 
 // The controls of NOVR's menus, kept apart from the game's flight bindings so they are few and plain: each command has a
 // keyboard key, a gamepad button and a joystick button, each of which can be set from Menu Controls or in the config file
-// ("Menu Controls" section, keyboard | gamepad | joystick as Input System paths). The joystick ones start empty and are
-// bound to the one device pressed: a generic "any joystick's hat" matched every stick, throttle and rudder plugged in,
-// and one whose hat rests off centre held Up down. The gamepad's left stick also moves, and Space and the keypad's Enter
-// also select. Only listened to while one of NOVR's menu screens is up. The directions repeat while held after a press,
-// like a held arrow key in a text box.
-// Some sticks have a control that keeps pressing itself (a throttle hat that flickers to Up at rest). Such a control is
-// ignored for the session: when it presses within the first moment of listening for a binding, or many times a second
-// on its own, and a binding to it is dropped.
+// ("Menu Controls" section, keyboard | gamepad | joystick). Keyboard and gamepad are read through Unity's Input System, as
+// its control paths. Joysticks are read through Rewired, the way the game reads them, as the Input System misreads some
+// sticks' hats (a VKB stick's hat Left came in as Up, an S-TECS throttle's hat pressed Up at rest). A joystick binding is
+// "rewired/<button>/<joystick name>": the button as Rewired numbers that stick's buttons (hat directions are buttons there)
+// on the stick of that name. They start empty. The gamepad's left stick also moves, and Space and the keypad's Enter also
+// select. Only listened to while one of NOVR's menu screens is up. The directions repeat while held after a press, like a
+// held arrow key in a text box.
+// A control that keeps pressing itself is ignored for the session: when it presses twice before the hand can have got to
+// it while listening for a binding, or many times a second on its own, and a joystick binding to it is dropped.
 internal static class MenuInput
 {
     public const int SlotCount = 3;
     public const string Section = "Menu Controls";
 
+    private const string RewiredPrefix = "rewired/";
     private const float RepeatDelaySeconds = 0.4f;
     private const float RepeatIntervalSeconds = 0.11f;
     private const float RebindMagnitude = 0.6f;
-    // Time for the hand to get from the binding box to the stick; joystick controls pressing before that are noise.
+    // Time for the hand to get from the binding box to the stick; joystick buttons pressing before that are left alone.
     private const float RebindSettleSeconds = 0.5f;
     private const int NoisyPresses = 8;
     private const float NoisyWindowSeconds = 1f;
 
     public static readonly MenuCommand[] Commands = (MenuCommand[])Enum.GetValues(typeof(MenuCommand));
-    private static readonly string[] SlotDevices = { "<Keyboard>", "<Gamepad>", "<Joystick>" };
+    private static readonly string[] SlotDevices = { "<Keyboard>", "<Gamepad>", "" };
 
     private static readonly InputAction?[] Actions = new InputAction?[Commands.Length];
+    // Each command's joystick binding, read from its path when the map is built; BoundButton is -1 for none.
+    private static readonly int[] BoundButton = new int[Commands.Length];
+    private static readonly string[] BoundJoystick = new string[Commands.Length];
+    private static readonly string[] BoundPath = new string[Commands.Length];
     private static readonly bool[] Fired = new bool[Commands.Length];
     private static readonly bool[] Held = new bool[Commands.Length];
     private static readonly float[] NextRepeat = new float[Commands.Length];
     private static InputActionMap? _map;
     private static InputActionRebindingExtensions.RebindingOperation? _rebind;
+    // A joystick binding being listened for, which Update polls Rewired for.
+    private static Action<bool>? _joystickListen;
+    private static MenuCommand _joystickListenCommand;
     private static bool _dirty = true;
     private static bool _subscribed;
-    private static bool _loggedDevices;
+    private static bool _loggedJoysticks;
     private static int _lastFrame = -1;
     private static float _rebindStarted;
-    private static readonly HashSet<InputControl> Noisy = new();
-    private static readonly Dictionary<InputControl, List<float>> RecentPresses = new();
+    // Ignored controls by key (an Input System control path, or a joystick binding's path), with their names to show.
+    private static readonly Dictionary<string, string> Noisy = new();
+    private static readonly Dictionary<string, List<float>> RecentPresses = new();
+    private static readonly Dictionary<string, int> SettlePresses = new();
+
+    // Rewired's reads of a single controller's buttons, which the game doesn't call itself (so they aren't among the
+    // references NOVR is built against); looked up by name once. Null when this Rewired lacks them: no joystick column then.
+    private static Func<RewiredJoystick, int, bool>? _buttonDown;
+    private static Func<RewiredJoystick, int, bool>? _button;
+    private static Func<RewiredJoystick, int>? _buttonCount;
+    private static PropertyInfo? _buttons;
+    private static bool _lookedUpRewired;
+    private static bool _stoppedJoysticks;
 
     public static MenuDevice LastDevice { get; private set; } = MenuDevice.Keyboard;
-    public static bool IsRebinding => _rebind != null;
+    public static bool IsRebinding => _rebind != null || _joystickListen != null;
 
     public static string Name(MenuCommand command) => command switch
     {
@@ -89,30 +113,16 @@ internal static class MenuInput
         _ => "| |"
     };
 
-    // The defaults of 0.4.21 to 0.4.23, whose generic joystick part a saved value still holding them drops (Migrate).
-    private static string? OldDefault(MenuCommand command) => command switch
+    // Before 0.4.26 the joystick part was an Input System path (the defaults of 0.4.21 to 0.4.23 held generic ones);
+    // those are dropped, to be bound again through Rewired.
+    public static void Migrate(ConfigEntry<string> entry)
     {
-        MenuCommand.Up => "<Keyboard>/upArrow | <Gamepad>/dpad/up | <Joystick>/hat/up",
-        MenuCommand.Down => "<Keyboard>/downArrow | <Gamepad>/dpad/down | <Joystick>/hat/down",
-        MenuCommand.Left => "<Keyboard>/leftArrow | <Gamepad>/dpad/left | <Joystick>/hat/left",
-        MenuCommand.Right => "<Keyboard>/rightArrow | <Gamepad>/dpad/right | <Joystick>/hat/right",
-        MenuCommand.Select => "<Keyboard>/enter | <Gamepad>/buttonSouth | <Joystick>/trigger",
-        _ => null
-    };
+        var slots = ReadSlots(entry.Value);
+        var joystick = slots[(int)MenuDevice.Joystick];
+        if (joystick.Length == 0 || joystick.StartsWith(RewiredPrefix, StringComparison.Ordinal)) return;
 
-    public static void Migrate(ConfigEntry<string> entry, MenuCommand command)
-    {
-        var old = OldDefault(command);
-        if (old == null) return;
-
-        var saved = ReadSlots(entry.Value);
-        var oldSlots = ReadSlots(old);
-        for (var slot = 0; slot < SlotCount; slot++)
-        {
-            if (saved[slot] != oldSlots[slot]) return;
-        }
-
-        entry.Value = DefaultBindings(command);
+        slots[(int)MenuDevice.Joystick] = "";
+        entry.Value = JoinSlots(slots);
     }
 
     private static string[] Extras(MenuCommand command) => command switch
@@ -137,28 +147,43 @@ internal static class MenuInput
         try
         {
             EnsureMap();
+            var now = Time.unscaledTime;
             if (IsRebinding)
             {
                 Array.Clear(Fired, 0, Fired.Length);
+                if (_joystickListen != null) ListenForJoystick(now);
                 return;
             }
 
             if (!_map!.enabled) _map.Enable();
-            var now = Time.unscaledTime;
+            var joysticks = Joysticks();
             for (var index = 0; index < Commands.Length; index++)
             {
                 var action = Actions[index]!;
+                var stick = BoundButton[index] >= 0 ? FindJoystick(joysticks, BoundJoystick[index]) : null;
                 Fired[index] = false;
+
+                MenuDevice? pressedOn = null;
                 if (action.WasPressedThisFrame())
                 {
-                    if (IsNoisy(action.activeControl, now)) continue;
+                    var control = action.activeControl;
+                    if (control == null || !IsNoisy(control, now)) pressedOn = DeviceOf(control?.device);
+                }
 
+                if (pressedOn == null && stick != null && StickButton(stick, BoundButton[index], down: true) &&
+                    !IsNoisy(BoundPath[index], DescribeJoystickButton(stick, BoundButton[index]), now))
+                {
+                    pressedOn = MenuDevice.Joystick;
+                }
+
+                if (pressedOn is { } device)
+                {
                     Fired[index] = true;
                     Held[index] = true;
                     NextRepeat[index] = now + RepeatDelaySeconds;
-                    NoteDevice(action.activeControl?.device);
+                    LastDevice = device;
                 }
-                else if (!action.IsPressed())
+                else if (!action.IsPressed() && (stick == null || !StickButton(stick, BoundButton[index], down: false)))
                 {
                     Held[index] = false;
                 }
@@ -183,7 +208,7 @@ internal static class MenuInput
     // No NOVR menu screen is up.
     public static void Release()
     {
-        _rebind?.Cancel();
+        CancelRebind();
         if (_map != null && _map.enabled) _map.Disable();
         Array.Clear(Fired, 0, Fired.Length);
         Array.Clear(Held, 0, Held.Length);
@@ -194,22 +219,27 @@ internal static class MenuInput
     public static string GetPath(MenuCommand command, MenuDevice device) =>
         ReadSlots(ConfigFor(command)?.Value ?? DefaultBindings(command))[(int)device];
 
-    // How the binding reads on screen, e.g. "Up Arrow", "A", "Hat/Up [VKBsim Gladiator EVO R]"; empty when there is none.
-    // Joystick ones name their device, as there can be several.
-    public static string GetDisplay(MenuCommand command, MenuDevice device)
+    // How the binding reads on screen, e.g. "Up Arrow", "A", "Hat 1 Left [VKBsim Gladiator EVO R]"; empty when there is
+    // none. Joystick ones name their stick (withDevice), as there can be several.
+    public static string GetDisplay(MenuCommand command, MenuDevice device, bool withDevice = true)
     {
         var path = GetPath(command, device);
         if (path.Length == 0) return "";
 
+        if (device == MenuDevice.Joystick)
+        {
+            if (!ReadJoystickPath(path, out var button, out var name)) return path;
+
+            var stick = FindJoystick(Joysticks(), name);
+            var buttonName = stick != null ? ButtonName(stick, button) : $"Button {button + 1}";
+            return withDevice ? $"{buttonName} [{name}]" : buttonName;
+        }
+
         try
         {
-            var options = InputControlPath.HumanReadableStringOptions.UseShortNames;
-            if (device != MenuDevice.Joystick) options |= InputControlPath.HumanReadableStringOptions.OmitDevice;
+            var options = InputControlPath.HumanReadableStringOptions.UseShortNames | InputControlPath.HumanReadableStringOptions.OmitDevice;
             var display = InputControlPath.ToHumanReadableString(path, options);
-            if (string.IsNullOrEmpty(display)) return path;
-
-            while (display.Contains("  ")) display = display.Replace("  ", " ");
-            return display.Replace(" ]", "]").Replace("[ ", "[");
+            return string.IsNullOrEmpty(display) ? path : display;
         }
         catch (Exception)
         {
@@ -220,7 +250,7 @@ internal static class MenuInput
     // For the prompt bar: the binding on the device last used, else on the keyboard.
     public static string GetPrompt(MenuCommand command)
     {
-        var display = GetDisplay(command, LastDevice);
+        var display = GetDisplay(command, LastDevice, withDevice: false);
         return display.Length > 0 ? display : GetDisplay(command, MenuDevice.Keyboard);
     }
 
@@ -231,8 +261,7 @@ internal static class MenuInput
 
         var slots = ReadSlots(entry.Value);
         slots[(int)device] = path.Trim();
-        // Without trailing spaces, which the config file drops.
-        entry.Value = string.Join(" | ", slots).TrimEnd();
+        entry.Value = JoinSlots(slots);
         _dirty = true;
     }
 
@@ -254,12 +283,28 @@ internal static class MenuInput
     {
         if (IsRebinding) return;
 
+        if (device == MenuDevice.Joystick)
+        {
+            if (Joysticks() == null)
+            {
+                finished(false);
+                return;
+            }
+
+            LogJoysticksOnce();
+            _joystickListenCommand = command;
+            _rebindStarted = Time.unscaledTime;
+            SettlePresses.Clear();
+            _joystickListen = finished;
+            return;
+        }
+
         try
         {
             EnsureMap();
             var action = Actions[(int)command]!;
             _map!.Disable();
-            var operation = action.PerformInteractiveRebinding((int)device)
+            _rebind = action.PerformInteractiveRebinding((int)device)
                 .WithExpectedControlType("Button")
                 .WithControlsHavingToMatchPath(SlotDevices[(int)device])
                 .WithControlsExcluding("<Keyboard>/anyKey")
@@ -268,7 +313,7 @@ internal static class MenuInput
                 .WithControlsExcluding("<Mouse>")
                 .WithCancelingThrough("<Keyboard>/escape")
                 .WithMagnitudeHavingToBeGreaterThan(RebindMagnitude)
-                .OnPotentialMatch(candidate => Choose(candidate, device))
+                .OnPotentialMatch(Choose)
                 .OnComplete(completed =>
                 {
                     var path = completed.action.bindings[(int)device].effectivePath ?? "";
@@ -282,10 +327,6 @@ internal static class MenuInput
                     EndRebind();
                     finished(false);
                 });
-            // Kept to the device pressed, instead of widened to "any joystick".
-            if (device == MenuDevice.Joystick) operation.WithoutGeneralizingPathOfSelectedControl();
-            _rebindStarted = Time.realtimeSinceStartup;
-            _rebind = operation;
             _rebind.Start();
         }
         catch (Exception exception)
@@ -296,79 +337,122 @@ internal static class MenuInput
         }
     }
 
-    public static void CancelRebind() => _rebind?.Cancel();
-
-    // Takes the best candidate that isn't noise; a joystick control pressing during the settle time is noise.
-    private static void Choose(InputActionRebindingExtensions.RebindingOperation operation, MenuDevice device)
+    public static void CancelRebind()
     {
-        var settling = device == MenuDevice.Joystick && Time.realtimeSinceStartup - _rebindStarted < RebindSettleSeconds;
+        _rebind?.Cancel();
+        if (_joystickListen != null) EndJoystickListen(false);
+    }
+
+    // Takes the first joystick button to go down that isn't noise. One pressing during the settle time is left alone;
+    // twice then, it is a control pressing by itself.
+    private static void ListenForJoystick(float now)
+    {
+        var keyboard = Keyboard.current;
+        if (keyboard != null && keyboard.escapeKey.wasPressedThisFrame)
+        {
+            EndJoystickListen(false);
+            return;
+        }
+
+        var joysticks = Joysticks();
+        if (joysticks == null) return;
+
+        var settling = now - _rebindStarted < RebindSettleSeconds;
+        foreach (var stick in joysticks)
+        {
+            if (stick == null) continue;
+
+            var count = ButtonCount(stick);
+            for (var button = 0; button < count; button++)
+            {
+                if (!StickButton(stick, button, down: true)) continue;
+
+                var path = JoystickPath(button, CleanName(stick.name));
+                if (Noisy.ContainsKey(path)) continue;
+
+                if (settling)
+                {
+                    SettlePresses.TryGetValue(path, out var presses);
+                    SettlePresses[path] = ++presses;
+                    if (presses >= 2) MarkNoisy(path, DescribeJoystickButton(stick, button), "pressed by itself while listening for a binding");
+                    continue;
+                }
+
+                var command = _joystickListenCommand;
+                SetPath(command, MenuDevice.Joystick, path);
+                NOVRPlugin.Log.LogInfo($"[NOVR] Menu controls: {Name(command)} on Joystick is now {DescribeJoystickButton(stick, button)} ({path})");
+                EndJoystickListen(true);
+                return;
+            }
+        }
+    }
+
+    private static void EndJoystickListen(bool bound)
+    {
+        var finished = _joystickListen;
+        _joystickListen = null;
+        SettlePresses.Clear();
+        _dirty = true;
+        finished?.Invoke(bound);
+    }
+
+    // Takes the best candidate that isn't noise.
+    private static void Choose(InputActionRebindingExtensions.RebindingOperation operation)
+    {
         foreach (var control in new List<InputControl>(operation.candidates))
         {
-            if (settling) MarkNoisy(control, "pressed by itself while listening for a binding");
-            if (Noisy.Contains(control)) operation.RemoveCandidate(control);
+            if (Noisy.ContainsKey(control.path)) operation.RemoveCandidate(control);
         }
 
         if (operation.candidates.Count > 0) operation.Complete();
     }
 
-    // A control pressing many times a second with nothing done is noise.
-    private static bool IsNoisy(InputControl? control, float now)
-    {
-        if (control == null) return false;
-        if (Noisy.Contains(control)) return true;
-        if (control.device is Keyboard or Mouse) return false;
+    private static bool IsNoisy(InputControl control, float now) =>
+        control.device is not (Keyboard or Mouse) && IsNoisy(control.path, $"{control.device.displayName.Trim()} {control.displayName}", now);
 
-        if (!RecentPresses.TryGetValue(control, out var presses)) RecentPresses[control] = presses = new List<float>();
+    // A control pressing many times a second with nothing done is noise.
+    private static bool IsNoisy(string key, string name, float now)
+    {
+        if (Noisy.ContainsKey(key)) return true;
+
+        if (!RecentPresses.TryGetValue(key, out var presses)) RecentPresses[key] = presses = new List<float>();
         presses.Add(now);
         presses.RemoveAll(time => now - time > NoisyWindowSeconds);
         if (presses.Count < NoisyPresses) return false;
 
-        MarkNoisy(control, $"pressed {presses.Count} times in a second by itself");
+        MarkNoisy(key, name, $"pressed {presses.Count} times in a second by itself");
         return true;
     }
 
     // Ignored from now on, and any joystick binding to it dropped.
-    private static void MarkNoisy(InputControl control, string why)
+    private static void MarkNoisy(string key, string name, string why)
     {
-        if (!Noisy.Add(control)) return;
+        if (Noisy.ContainsKey(key)) return;
 
-        NOVRPlugin.Log.LogInfo($"[NOVR] Menu controls: ignoring {control.path}, {why}.");
+        Noisy[key] = name;
+        NOVRPlugin.Log.LogInfo($"[NOVR] Menu controls: ignoring {name}, {why}.");
         foreach (var command in Commands)
         {
-            var path = GetPath(command, MenuDevice.Joystick);
-            try
-            {
-                if (path.Length > 0 && InputControlPath.Matches(path, control)) SetPath(command, MenuDevice.Joystick, "");
-            }
-            catch (Exception)
-            {
-                // A path Unity can't read binds nothing anyway.
-            }
+            if (GetPath(command, MenuDevice.Joystick) == key) SetPath(command, MenuDevice.Joystick, "");
         }
     }
 
     // For Menu Controls: what is being ignored.
-    public static string NoisyNames()
-    {
-        var names = new StringBuilder();
-        foreach (var control in Noisy)
-        {
-            if (names.Length > 0) names.Append(", ");
-            names.Append($"{control.device.displayName.Trim()} {control.displayName}");
-        }
+    public static string NoisyNames() => string.Join(", ", Noisy.Values);
 
-        return names.ToString();
-    }
-
+    // For Menu Controls: the joysticks the game has, which are the ones that can be bound.
     public static string JoystickNames()
     {
+        var joysticks = Joysticks();
+        if (joysticks == null) return "";
+
         var names = new StringBuilder();
-        foreach (var device in InputSystem.devices)
+        foreach (var stick in joysticks)
         {
-            if (device is not Joystick) continue;
+            if (stick == null) continue;
 
             if (names.Length > 0) names.Append(", ");
-            names.Append(device.displayName);
+            names.Append(CleanName(stick.name));
         }
 
         return names.ToString();
@@ -382,14 +466,173 @@ internal static class MenuInput
         _dirty = true;
     }
 
-    private static void NoteDevice(InputDevice? device)
+    private static MenuDevice DeviceOf(InputDevice? device) => device switch
     {
-        LastDevice = device switch
+        Gamepad => MenuDevice.Gamepad,
+        Joystick => MenuDevice.Joystick,
+        _ => MenuDevice.Keyboard
+    };
+
+    // The joysticks the game's player has, which are the ones it flies with; null when they can't be read.
+    private static IList<RewiredJoystick>? Joysticks()
+    {
+        if (!LookUpRewired()) return null;
+
+        try
         {
-            Gamepad => MenuDevice.Gamepad,
-            Joystick => MenuDevice.Joystick,
-            _ => MenuDevice.Keyboard
-        };
+            var player = GameManager.playerInput;
+            return Rewired.ReInput.isReady && player != null ? player.controllers?.Joysticks : null;
+        }
+        catch (Exception exception)
+        {
+            StopJoysticks(exception.Message);
+            return null;
+        }
+    }
+
+    private static RewiredJoystick? FindJoystick(IList<RewiredJoystick>? joysticks, string name)
+    {
+        if (joysticks == null) return null;
+
+        foreach (var stick in joysticks)
+        {
+            if (stick != null && CleanName(stick.name) == name) return stick;
+        }
+
+        return null;
+    }
+
+    private static bool LookUpRewired()
+    {
+        if (_lookedUpRewired) return _buttonDown != null;
+
+        _lookedUpRewired = true;
+        try
+        {
+            var type = typeof(RewiredJoystick);
+            _buttonDown = Bind<Func<RewiredJoystick, int, bool>>(type.GetMethod("GetButtonDown", new[] { typeof(int) }));
+            _button = Bind<Func<RewiredJoystick, int, bool>>(type.GetMethod("GetButton", new[] { typeof(int) }));
+            _buttonCount = Bind<Func<RewiredJoystick, int>>(type.GetProperty("buttonCount")?.GetGetMethod());
+            _buttons = type.GetProperty("Buttons");
+        }
+        catch (Exception exception)
+        {
+            StopJoysticks(exception.Message);
+            return false;
+        }
+
+        if (_buttonDown == null || _button == null || _buttonCount == null) StopJoysticks("Rewired has no per-button reads");
+        return _buttonDown != null;
+    }
+
+    private static T? Bind<T>(MethodInfo? method) where T : Delegate =>
+        method == null ? null : Delegate.CreateDelegate(typeof(T), method, false) as T;
+
+    // For the session, with one line in the log.
+    private static void StopJoysticks(string why)
+    {
+        _buttonDown = null;
+        _button = null;
+        _lookedUpRewired = true;
+        if (_stoppedJoysticks) return;
+
+        _stoppedJoysticks = true;
+        NOVRPlugin.Log.LogWarning($"[NOVR] Menu controls: joysticks can't be read ({why}); keyboard and gamepad only.");
+    }
+
+    private static int ButtonCount(RewiredJoystick stick)
+    {
+        try
+        {
+            return _buttonCount?.Invoke(stick) ?? 0;
+        }
+        catch (Exception exception)
+        {
+            StopJoysticks(exception.Message);
+            return 0;
+        }
+    }
+
+    private static bool StickButton(RewiredJoystick stick, int button, bool down)
+    {
+        var read = down ? _buttonDown : _button;
+        if (read == null || button >= ButtonCount(stick)) return false;
+
+        try
+        {
+            return read(stick, button);
+        }
+        catch (Exception exception)
+        {
+            StopJoysticks(exception.Message);
+            return false;
+        }
+    }
+
+    // Rewired's name for the button, like "Button 3" or "Hat 1 Left".
+    private static string ButtonName(RewiredJoystick stick, int button)
+    {
+        try
+        {
+            if (_buttons?.GetValue(stick, null) is IEnumerable buttons)
+            {
+                var index = 0;
+                foreach (var element in buttons)
+                {
+                    if (index++ != button) continue;
+
+                    if (element?.GetType().GetProperty("name")?.GetValue(element, null) is string { Length: > 0 } name) return name.Trim();
+                    break;
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // Named by its number instead.
+        }
+
+        return $"Button {button + 1}";
+    }
+
+    private static string DescribeJoystickButton(RewiredJoystick stick, int button) => $"{CleanName(stick.name)} {ButtonName(stick, button)}";
+
+    // Without the spaces some sticks pad their names with, or the config file's separator.
+    private static string CleanName(string? name) => (name ?? "").Replace('|', ' ').Trim();
+
+    private static string JoystickPath(int button, string joystick) => $"{RewiredPrefix}{button.ToString(CultureInfo.InvariantCulture)}/{joystick}";
+
+    private static bool ReadJoystickPath(string path, out int button, out string joystick)
+    {
+        button = -1;
+        joystick = "";
+        if (!path.StartsWith(RewiredPrefix, StringComparison.Ordinal)) return false;
+
+        var rest = path.Substring(RewiredPrefix.Length);
+        var slash = rest.IndexOf('/');
+        if (slash <= 0 || !int.TryParse(rest.Substring(0, slash), NumberStyles.None, CultureInfo.InvariantCulture, out button)) return false;
+
+        joystick = rest.Substring(slash + 1).Trim();
+        return joystick.Length > 0;
+    }
+
+    // Joysticks the player has, once, when a joystick binding is first listened for.
+    private static void LogJoysticksOnce()
+    {
+        if (_loggedJoysticks) return;
+        _loggedJoysticks = true;
+
+        var names = new StringBuilder();
+        foreach (var stick in Joysticks() ?? Array.Empty<RewiredJoystick>())
+        {
+            if (stick == null) continue;
+
+            if (names.Length > 0) names.Append(", ");
+            names.Append($"{CleanName(stick.name)} ({ButtonCount(stick)} buttons)");
+        }
+
+        NOVRPlugin.Log.LogInfo(names.Length > 0
+            ? $"[NOVR] Menu controls: joysticks: {names}"
+            : "[NOVR] Menu controls: the game has no joystick.");
     }
 
     private static ConfigEntry<string>? ConfigFor(MenuCommand command)
@@ -410,6 +653,9 @@ internal static class MenuInput
         return slots;
     }
 
+    // Without trailing spaces, which the config file drops.
+    private static string JoinSlots(string[] slots) => string.Join(" | ", slots).TrimEnd();
+
     private static void EnsureMap()
     {
         if (!_subscribed && ModConfiguration.Instance?.MenuBindings is { } entries)
@@ -421,7 +667,6 @@ internal static class MenuInput
         // Not under a binding being listened for; it is rebuilt once that ends.
         if (_map != null && (!_dirty || IsRebinding)) return;
 
-        LogDevicesOnce();
         var enabled = _map?.enabled == true;
         _map?.Disable();
         _map?.Dispose();
@@ -432,24 +677,18 @@ internal static class MenuInput
         {
             var command = Commands[index];
             var action = _map.AddAction(Name(command), InputActionType.Button);
-            // The three settable bindings come first, so a slot is also its binding index.
-            for (var slot = 0; slot < SlotCount; slot++) action.AddBinding(GetPath(command, (MenuDevice)slot));
+            // The three slots come first, so a slot is also its binding index; the joystick one is read from Rewired.
+            action.AddBinding(GetPath(command, MenuDevice.Keyboard));
+            action.AddBinding(GetPath(command, MenuDevice.Gamepad));
+            action.AddBinding("");
             foreach (var extra in Extras(command)) action.AddBinding(extra);
             Actions[index] = action;
+
+            BoundPath[index] = GetPath(command, MenuDevice.Joystick);
+            BoundButton[index] = ReadJoystickPath(BoundPath[index], out var button, out var joystick) ? button : -1;
+            BoundJoystick[index] = joystick;
         }
 
         if (enabled) _map.Enable();
-    }
-
-    // Whether a HOTAS shows up to Unity's Input System at all decides whether its buttons can be bound here.
-    private static void LogDevicesOnce()
-    {
-        if (_loggedDevices) return;
-        _loggedDevices = true;
-
-        var joysticks = JoystickNames();
-        NOVRPlugin.Log.LogInfo(joysticks.Length > 0
-            ? $"[NOVR] Menu controls: joysticks seen: {joysticks}"
-            : "[NOVR] Menu controls: no joystick seen by Unity's Input System; keyboard and gamepad only.");
     }
 }

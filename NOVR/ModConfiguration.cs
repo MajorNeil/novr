@@ -253,8 +253,8 @@ public class ModConfiguration
                 MenuInput.Section,
                 MenuInput.Name(command),
                 MenuInput.DefaultBindings(command),
-                "Keyboard | gamepad | joystick binding for this in NOVR's menus, as Unity Input System control paths; leave a part empty for none. Easiest to set from Menu Controls in the main menu.");
-            MenuInput.Migrate(MenuBindings[command], command);
+                "Keyboard | gamepad | joystick binding for this in NOVR's menus: keyboard and gamepad as Unity Input System control paths, joystick as rewired/<button number>/<joystick name>; leave a part empty for none. Easiest to set from Menu Controls in the main menu.");
+            MenuInput.Migrate(MenuBindings[command]);
         }
     }
 }
