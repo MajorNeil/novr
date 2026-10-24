@@ -15,20 +15,23 @@ namespace NOVR.VrUi.Menu;
 // Out of flight, the menus are in one of the game's own aircraft shelters instead of over a flat picture. The player sits
 // at a desk by the left wall behind the parked aircraft, turned toward the open door, with the main menu on a briefing
 // board in front and the aircraft beyond it (the menu is anchored to the seat while this is up, NativeVrUiRoot). The
-// shelter's floor and walls are found with raycasts against copies of its own colliders, so the seat, desk and board
-// stand clear of them. The shelter, the aircraft,
-// the buildings and vehicles across the apron are copied from the game's prefabs (VisualClone); the desk and board, the
-// dusk sky, the hills and the airfield are made here. The door rolls open when the menu comes up and shut while a
-// mission loads (LoadingScreenPatch), and now and then the game's aircraft fly past the field with their engine sound.
-// Everything sits in the menu camera's tracking space, so it stays put around the player across the menu scenes and
-// moves with a recenter. Whatever the game doesn't have (a building, a shader) is left out.
+// shelter's floor, walls, roof and door are found with raycasts against copies of its own colliders, so the seat, desk
+// and board stand clear of them; that is done once, so the seat stays put whichever aircraft is parked. Only an aircraft
+// the shelter is made for that fits it is parked: between the walls and clear of the desk, under the roof, and inside the
+// door once moved forward clear of the seat. The aircraft flying past and parked outside can be any of the game's.
+// Only the game's standard units are used: not its disabled ones, its event ones (April fools) or the ones it keeps out
+// of its encyclopedia, and not one whose copy doesn't come out whole.
+// The shelter, the aircraft, the buildings and vehicles across the apron are copied from the game's prefabs
+// (VisualClone); the desk and board, the dusk sky, the hills and the airfield are made here. The door rolls open when the
+// menu comes up and shut while a mission loads (LoadingScreenPatch), and now and then the game's aircraft fly past the
+// field with their engine sound. Everything sits in the menu camera's tracking space, so it stays put around the player
+// across the menu scenes and moves with a recenter. Whatever the game doesn't have (a building, a shader) is left out.
 public class MenuEnvironment : NOVRBehaviour
 {
     // Seated eye height above the floor.
     private const float EyeHeight = 1.3f;
-    // How far the seat stays from the wall, and how far behind the tail it is when there is room.
+    // How far the seat stays from the walls.
     private const float WallClearance = 1.3f;
-    private const float BehindTail = 2.5f;
     // The shelter's copied colliders, on a layer no camera draws and nothing else casts against.
     private const int ColliderLayer = (int)LayerHelper.Layers.VrUiCapture;
     private const float OpenDelaySeconds = 1.2f;
@@ -46,7 +49,9 @@ public class MenuEnvironment : NOVRBehaviour
     private static readonly string[] MenuScenes = { "MainMenu", "MultiplayerMenu", "MissionsMenu" };
     private static readonly string[] ShelterWords = { "bunker", "shelter", "hardened", "has" };
     private static readonly string[] EngineWords = { "engine", "jet", "turbine", "exterior", "external", "distant", "far" };
-    private static readonly string[] VehicleWords = { "truck", "fuel", "tanker", "supply", "utility", "cargo", "transport", "jeep", "car", "van" };
+    // Support vehicles first (fuel, logistics and transport trucks, light utility cars), not the armed ones.
+    private static readonly string[] VehicleSuffixes = { "-ft", "-l", "-t" };
+    private static readonly string[] VehicleWords = { "fuel", "tanker", "lcv", "utility", "supply", "cargo" };
 
     private static readonly Color SkyZenith = new(0.05f, 0.08f, 0.19f);
     private static readonly Color SkyHigh = new(0.2f, 0.25f, 0.42f);
@@ -68,6 +73,17 @@ public class MenuEnvironment : NOVRBehaviour
 
     private readonly List<Door> _doors = new();
     private readonly List<Collider> _shelterColliders = new();
+    // The aircraft the game's hangars can hold, which fly past; and the ones whose copies came out incomplete.
+    private readonly List<AircraftDefinition> _flybyAircraft = new();
+    private readonly HashSet<UnitDefinition> _incomplete = new();
+    private readonly HashSet<UnitDefinition> _doesNotFit = new();
+    // The room the shelter has for an aircraft, in the site frame: between the walls at wing height, and under the roof.
+    private float _fitLeft = -10f;
+    private float _fitRight = 10f;
+    private float _ceiling = 8f;
+    private Vector3 _seat;
+    private float _seatYaw;
+    private float _doorInside;
     private readonly List<Flyby> _flybys = new();
     // Kept after their pass and flown again, so each aircraft type is copied at most once per wingman.
     private readonly Dictionary<AircraftDefinition, List<GameObject>> _flybyClones = new();
@@ -218,8 +234,10 @@ public class MenuEnvironment : NOVRBehaviour
             _site.SetParent(_root.transform, false);
 
             BuildShelter();
+            CollectFlybyAircraft();
             _root.SetActive(true);
             _floor = MeasureFloor();
+            _seat = PlaceSeat(out _seatYaw);
             _root.SetActive(false);
             _lit = LitTemplate();
             _unlit = UnlitTemplate();
@@ -338,7 +356,7 @@ public class MenuEnvironment : NOVRBehaviour
         var candidates = new StringBuilder();
         foreach (var definition in encyclopedia.buildings)
         {
-            if (definition == null || definition.unitPrefab == null) continue;
+            if (!Standard(definition)) continue;
 
             if (candidates.Length > 0) candidates.Append(", ");
             candidates.Append(definition.unitPrefab.name);
@@ -368,7 +386,7 @@ public class MenuEnvironment : NOVRBehaviour
 
         var map = new Dictionary<Transform, Transform>();
         _shelter = VisualClone.Create(best.unitPrefab, _site!, map, _shelterColliders, ColliderLayer).transform;
-        _hangarAircraft = GetField<AircraftDefinition[]>(bestHangar, "availableAircraft") ?? Array.Empty<AircraftDefinition>();
+        _hangarAircraft = Array.FindAll(GetField<AircraftDefinition[]>(bestHangar, "availableAircraft") ?? Array.Empty<AircraftDefinition>(), Standard);
 
         var spawn = GetField<Transform>(bestHangar, "spawnTransform");
         if (spawn == null || !map.TryGetValue(spawn, out _spawn)) map.TryGetValue(bestHangar.transform, out _spawn);
@@ -441,48 +459,117 @@ public class MenuEnvironment : NOVRBehaviour
         FeaturedAircraft = null;
         if (_site == null) return;
 
-        var halfSpan = 6f;
-        var nose = 8f;
-        var tail = 8f;
-        var aircraft = PickAircraft(_hangarAircraft);
-        if (aircraft != null && _spawn != null)
+        var candidates = new List<AircraftDefinition>();
+        foreach (var aircraft in _hangarAircraft)
         {
-            _featured = VisualClone.Create(aircraft.unitPrefab, _spawn);
-            // On the floor found under the spawn point, which the game's spawn drops it onto.
-            _featured.transform.localPosition = Vector3.up * (aircraft.spawnOffset.y + _floor) + Vector3.forward * aircraft.spawnOffset.z;
-            _featured.transform.localRotation = Quaternion.Euler(aircraft.restRotation);
-            FeaturedAircraft = aircraft.unitName;
-            if (TryGetBounds(_featured, _site, out var bounds))
-            {
-                halfSpan = Mathf.Max(-bounds.min.x, bounds.max.x);
-                nose = bounds.max.z;
-                tail = -bounds.min.z;
-            }
+            if (!_incomplete.Contains(aircraft) && !_doesNotFit.Contains(aircraft)) candidates.Add(aircraft);
         }
 
-        var seat = PlaceSeat(halfSpan, nose, tail, out var yaw);
-        var turn = Quaternion.Euler(0f, -yaw, 0f);
+        // In random order until one is whole and fits; one that doesn't isn't tried again.
+        while (_featured == null && _spawn != null && candidates.Count > 0)
+        {
+            var pick = Random.Range(0, candidates.Count);
+            var aircraft = candidates[pick];
+            candidates.RemoveAt(pick);
+
+            var clone = VisualClone.Create(aircraft.unitPrefab, _spawn);
+            if (!LooksWhole(clone, aircraft))
+            {
+                Destroy(clone);
+                continue;
+            }
+
+            // On the floor found under the spawn point, which the game's spawn drops it onto.
+            clone.transform.localPosition = Vector3.up * (aircraft.spawnOffset.y + _floor) + Vector3.forward * aircraft.spawnOffset.z;
+            clone.transform.localRotation = Quaternion.Euler(aircraft.restRotation);
+
+            // Its tail clear of the desk in front of the seat; then it has to fit.
+            if (!TryGetBounds(clone, _site, out var bounds))
+            {
+                Destroy(clone);
+                continue;
+            }
+
+            var forward = Mathf.Max(0f, _seat.z + 1.6f - bounds.min.z);
+            if (!Fits(bounds, forward, out var why))
+            {
+                Destroy(clone);
+                if (_doesNotFit.Add(aircraft)) NOVRPlugin.Log.LogInfo($"[NOVR] Menu hangar: {aircraft.unitName} doesn't fit: {why}.");
+                continue;
+            }
+
+            clone.transform.localPosition += Vector3.forward * forward;
+            _featured = clone;
+            FeaturedAircraft = aircraft.unitName;
+        }
+
+        var turn = Quaternion.Euler(0f, -_seatYaw, 0f);
         _site.localRotation = turn;
-        _site.localPosition = -(turn * seat);
+        _site.localPosition = -(turn * _seat);
     }
 
-    // By the left wall behind the tail, turned toward the door; beside the aircraft if there is no room behind it. Then
-    // turned further right while the board or desk would reach the wall.
-    private Vector3 PlaceSeat(float halfSpan, float nose, float tail, out float yaw)
+    // Bounds in the site frame, before being moved forward by forward.
+    private bool Fits(Bounds bounds, float forward, out string why)
+    {
+        why = bounds.min.x < _fitLeft + 0.3f || bounds.max.x > _fitRight - 0.3f ? $"{bounds.size.x:0.0} m span, the walls are {_fitRight - _fitLeft:0.0} m apart"
+            : bounds.min.x < _seat.x + 0.8f ? "its wing would reach the desk"
+            : bounds.max.y > _ceiling - 0.3f ? $"{bounds.max.y - _floor:0.0} m tall, the roof is {_ceiling - _floor:0.0} m up"
+            : bounds.max.z + forward > _doorInside - 0.4f ? $"{bounds.size.z:0.0} m long, too long between the desk and the door"
+            : "";
+        return why.Length == 0;
+    }
+
+    // The game's own units only: not disabled, not event content (April fools), not kept out of its encyclopedia.
+    private static bool Standard(UnitDefinition? definition) =>
+        definition != null && definition.unitPrefab != null && definition.IsAllowed(false) && !definition.dontAutomaticallyAddToEncyclopedia;
+
+    // A copy much smaller than the size the game gives the unit is missing its body (a unit that builds it at run time);
+    // it is left out, and not tried again.
+    private bool LooksWhole(GameObject clone, UnitDefinition definition)
+    {
+        var expected = Mathf.Max(definition.length, definition.width);
+        if (expected <= 0f) return true;
+
+        var size = TryGetBounds(clone, clone.transform, out var bounds) ? Mathf.Max(bounds.size.x, bounds.size.z) : 0f;
+        if (size >= expected * 0.5f) return true;
+
+        if (_incomplete.Add(definition))
+            NOVRPlugin.Log.LogInfo($"[NOVR] Menu hangar: left out {definition.unitName} ({definition.unitPrefab.name}), whose copy is {size:0.0} m across of {expected:0.0} m.");
+        return false;
+    }
+
+    // Any of the game's standard aircraft, to fly past and park outside.
+    private void CollectFlybyAircraft()
+    {
+        foreach (var aircraft in Encyclopedia.i.aircraft)
+        {
+            if (Standard(aircraft) && !_flybyAircraft.Contains(aircraft)) _flybyAircraft.Add(aircraft);
+        }
+    }
+
+    // In the back left corner, by the left wall as far back as the back wall allows, turned toward the door; then turned
+    // further right while the board or desk would reach the wall.
+    private Vector3 PlaceSeat(out float yaw)
     {
         SetCollidersEnabled(true);
         try
         {
             var eye = _floor + EyeHeight;
-            var back = -CastOr(new Vector3(-halfSpan, eye, 0f), Vector3.back, -_shelterBounds.min.z * 0.8f);
-            var z = Mathf.Max(-(tail + BehindTail), back + WallClearance);
-            var behind = z <= -tail - 0.8f;
-            if (!behind) z = Mathf.Lerp(-tail, nose, 0.3f);
+            var back = -CastOr(new Vector3(-4f, eye, 0f), Vector3.back, -_shelterBounds.min.z * 0.8f);
+            var door = CastOr(new Vector3(0f, eye, 0f), Vector3.forward, _doorZ);
+            _doorInside = door;
+            var z = Mathf.Clamp(back + WallClearance, back + 0.5f, door - 3f);
+
+            // The room for an aircraft at the spawn point: the narrower of the walls low and at wing height, and the roof.
+            _fitLeft = -Mathf.Min(CastOr(new Vector3(0f, _floor + 1f, 0f), Vector3.left, _insideHalfWidth),
+                CastOr(new Vector3(0f, _floor + 2.5f, 0f), Vector3.left, _insideHalfWidth));
+            _fitRight = Mathf.Min(CastOr(new Vector3(0f, _floor + 1f, 0f), Vector3.right, _insideHalfWidth),
+                CastOr(new Vector3(0f, _floor + 2.5f, 0f), Vector3.right, _insideHalfWidth));
+            _ceiling = _floor + 1f + CastOr(new Vector3(0f, _floor + 1f, 0f), Vector3.up, Mathf.Max(3f, _shelterBounds.max.y * 0.8f - _floor - 1f));
 
             var wall = Mathf.Min(CastOr(new Vector3(0f, eye, z), Vector3.left, _insideHalfWidth),
                 CastOr(new Vector3(0f, _floor + 0.75f, z), Vector3.left, _insideHalfWidth));
             var x = -wall + WallClearance;
-            var door = CastOr(new Vector3(0f, eye, 0f), Vector3.forward, _doorZ);
             var seat = new Vector3(x, eye, z);
             yaw = Mathf.Clamp(Mathf.Atan2(-x, door - z) * Mathf.Rad2Deg, 0f, 45f);
             for (var step = 0; step < 8 && !Clear(seat, yaw); step++) yaw += 5f;
@@ -491,7 +578,9 @@ public class MenuEnvironment : NOVRBehaviour
             {
                 _loggedLayout = true;
                 NOVRPlugin.Log.LogInfo($"[NOVR] Menu hangar: {_shelterColliders.Count} colliders; floor {_floor:0.00} m from the spawn point, back wall {back:0.0} m, " +
-                                       $"left wall {-wall:0.0} m, door {door:0.0} m; seat at {x:0.0}, {z:0.0} m ({(behind ? "behind" : "beside")} the aircraft), turned {yaw:0} deg.");
+                                       $"left wall {-wall:0.0} m, door {door:0.0} m; room for {_fitRight - _fitLeft:0.0} m span, {_ceiling - _floor:0.0} m high; " +
+                                       $"seat at {x:0.0}, {z:0.0} m, turned {yaw:0} deg; " +
+                                       $"{_hangarAircraft.Length} aircraft types park here, {_flybyAircraft.Count} fly past.");
             }
 
             return seat;
@@ -556,12 +645,12 @@ public class MenuEnvironment : NOVRBehaviour
 
     private float CastOr(Vector3 origin, Vector3 direction, float fallback) => Cast(origin, direction, 80f, out var hit) ? hit : fallback;
 
-    private AircraftDefinition? PickAircraft(AircraftDefinition[] preferred)
+    private AircraftDefinition? PickAircraft(IList<AircraftDefinition> preferred)
     {
         var choices = new List<AircraftDefinition>();
-        foreach (var definition in preferred.Length > 0 ? preferred : Encyclopedia.i.aircraft.ToArray())
+        foreach (var definition in preferred.Count > 0 ? preferred : _flybyAircraft)
         {
-            if (definition != null && definition.unitPrefab != null) choices.Add(definition);
+            if (Standard(definition) && !_incomplete.Contains(definition)) choices.Add(definition);
         }
 
         return choices.Count > 0 ? choices[Random.Range(0, choices.Count)] : null;
@@ -574,6 +663,8 @@ public class MenuEnvironment : NOVRBehaviour
         var any = false;
         foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>())
         {
+            if (!renderer.enabled) continue;
+
             var world = renderer.bounds;
             for (var corner = 0; corner < 8; corner++)
             {
@@ -798,16 +889,17 @@ public class MenuEnvironment : NOVRBehaviour
         {
             foreach (var definition in buildings)
             {
-                if (definition == null || definition.unitPrefab == null || !definition.unitPrefab.name.ToLowerInvariant().Contains(word)) continue;
+                if (!Standard(definition) || !definition.unitPrefab.name.ToLowerInvariant().Contains(word)) continue;
 
                 var building = VisualClone.Create(definition.unitPrefab, parent);
                 building.transform.localPosition = position;
                 building.transform.localRotation = Quaternion.Euler(0f, yaw, 0f);
-                if (park && PickAircraft(_hangarAircraft) is { } aircraft)
+                if (park && PickAircraft(_flybyAircraft) is { } aircraft)
                 {
                     var parked = VisualClone.Create(aircraft.unitPrefab, building.transform);
                     parked.transform.localPosition = Vector3.up * aircraft.spawnOffset.y;
                     parked.transform.localRotation = Quaternion.Euler(aircraft.restRotation);
+                    if (!LooksWhole(parked, aircraft)) Destroy(parked);
                 }
 
                 return;
@@ -824,20 +916,13 @@ public class MenuEnvironment : NOVRBehaviour
         var picked = new List<VehicleDefinition>();
         foreach (var definition in vehicles)
         {
-            if (definition == null || definition.unitPrefab == null) continue;
+            if (!Standard(definition)) continue;
 
             if (names.Length > 0) names.Append(", ");
             names.Append(definition.unitPrefab.name);
-            var name = $"{definition.unitName} {definition.unitPrefab.name}".ToLowerInvariant();
+            var name = definition.unitPrefab.name.ToLowerInvariant();
             if (definition.length > 14f || picked.Count >= 2) continue;
-
-            foreach (var word in VehicleWords)
-            {
-                if (!name.Contains(word)) continue;
-
-                picked.Add(definition);
-                break;
-            }
+            if (Array.Exists(VehicleSuffixes, name.EndsWith) || Array.Exists(VehicleWords, name.Contains)) picked.Add(definition);
         }
 
         var spots = new[] { (new Vector3(16f, 0f, _doorZ + 22f), 250f), (new Vector3(-38f, 0f, _doorZ + 100f), 170f) };
@@ -846,6 +931,7 @@ public class MenuEnvironment : NOVRBehaviour
             var vehicle = VisualClone.Create(picked[index].unitPrefab, parent);
             vehicle.transform.localPosition = spots[index].Item1 + Vector3.up * picked[index].spawnOffset.y;
             vehicle.transform.localRotation = Quaternion.Euler(0f, spots[index].Item2, 0f);
+            if (!LooksWhole(vehicle, picked[index])) Destroy(vehicle);
         }
 
         NOVRPlugin.Log.LogInfo($"[NOVR] Menu hangar: {picked.Count} vehicles out on the apron, of {names}.");
@@ -946,28 +1032,31 @@ public class MenuEnvironment : NOVRBehaviour
         if (now < _nextFlyby || _flybys.Count > 0) return;
 
         _nextFlyby = now + Random.Range(FlybyMinSeconds, FlybyMaxSeconds);
-        var aircraft = Encyclopedia.i?.aircraft;
-        if (aircraft == null || aircraft.Count == 0) return;
-
-        var definition = aircraft[Random.Range(0, aircraft.Count)];
-        if (definition == null || definition.unitPrefab == null) return;
+        var definition = PickAircraft(_flybyAircraft);
+        if (definition == null) return;
 
         var side = Random.value < 0.5f ? -1f : 1f;
         var speed = Random.Range(140f, 230f);
         var start = new Vector3(-side * FlybyLength / 2f, Random.Range(90f, 240f), _doorZ + RunwayFromDoor + Random.Range(-120f, 300f));
         var velocity = new Vector3(side * speed, 0f, 0f);
-        Launch(definition, start, velocity, FlybyLength / speed);
         // Sometimes a pair, the wingman back and out to the side.
-        if (Random.value < 0.35f) Launch(definition, start + new Vector3(-side * 60f, -10f, 40f), velocity, FlybyLength / speed);
+        if (Launch(definition, start, velocity, FlybyLength / speed) && Random.value < 0.35f)
+            Launch(definition, start + new Vector3(-side * 60f, -10f, 40f), velocity, FlybyLength / speed);
     }
 
-    private void Launch(AircraftDefinition definition, Vector3 start, Vector3 velocity, float seconds)
+    private bool Launch(AircraftDefinition definition, Vector3 start, Vector3 velocity, float seconds)
     {
         if (!_flybyClones.TryGetValue(definition, out var clones)) _flybyClones[definition] = clones = new List<GameObject>();
         var clone = clones.Find(cached => cached != null && !cached.activeSelf);
         if (clone == null)
         {
             clone = VisualClone.Create(definition.unitPrefab, _site!);
+            if (!LooksWhole(clone, definition))
+            {
+                Destroy(clone);
+                return false;
+            }
+
             clone.name = $"Flyby {definition.unitName}";
             AddEngineSound(clone, definition.unitPrefab);
             clones.Add(clone);
@@ -979,6 +1068,7 @@ public class MenuEnvironment : NOVRBehaviour
         var engine = clone.GetComponent<AudioSource>();
         if (engine != null) engine.Play();
         _flybys.Add(new Flyby { Clone = clone, Velocity = velocity, EndTime = Time.unscaledTime + seconds });
+        return true;
     }
 
     // The aircraft's own looping engine sound, preferring one named for the engine or the outside.

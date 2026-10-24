@@ -33,6 +33,9 @@ public enum MenuDevice
 // and one whose hat rests off centre held Up down. The gamepad's left stick also moves, and Space and the keypad's Enter
 // also select. Only listened to while one of NOVR's menu screens is up. The directions repeat while held after a press,
 // like a held arrow key in a text box.
+// Some sticks have a control that keeps pressing itself (a throttle hat that flickers to Up at rest). Such a control is
+// ignored for the session: when it presses within the first moment of listening for a binding, or many times a second
+// on its own, and a binding to it is dropped.
 internal static class MenuInput
 {
     public const int SlotCount = 3;
@@ -41,6 +44,10 @@ internal static class MenuInput
     private const float RepeatDelaySeconds = 0.4f;
     private const float RepeatIntervalSeconds = 0.11f;
     private const float RebindMagnitude = 0.6f;
+    // Time for the hand to get from the binding box to the stick; joystick controls pressing before that are noise.
+    private const float RebindSettleSeconds = 0.5f;
+    private const int NoisyPresses = 8;
+    private const float NoisyWindowSeconds = 1f;
 
     public static readonly MenuCommand[] Commands = (MenuCommand[])Enum.GetValues(typeof(MenuCommand));
     private static readonly string[] SlotDevices = { "<Keyboard>", "<Gamepad>", "<Joystick>" };
@@ -55,6 +62,9 @@ internal static class MenuInput
     private static bool _subscribed;
     private static bool _loggedDevices;
     private static int _lastFrame = -1;
+    private static float _rebindStarted;
+    private static readonly HashSet<InputControl> Noisy = new();
+    private static readonly Dictionary<InputControl, List<float>> RecentPresses = new();
 
     public static MenuDevice LastDevice { get; private set; } = MenuDevice.Keyboard;
     public static bool IsRebinding => _rebind != null;
@@ -141,6 +151,8 @@ internal static class MenuInput
                 Fired[index] = false;
                 if (action.WasPressedThisFrame())
                 {
+                    if (IsNoisy(action.activeControl, now)) continue;
+
                     Fired[index] = true;
                     Held[index] = true;
                     NextRepeat[index] = now + RepeatDelaySeconds;
@@ -256,7 +268,7 @@ internal static class MenuInput
                 .WithControlsExcluding("<Mouse>")
                 .WithCancelingThrough("<Keyboard>/escape")
                 .WithMagnitudeHavingToBeGreaterThan(RebindMagnitude)
-                .OnMatchWaitForAnother(0.1f)
+                .OnPotentialMatch(candidate => Choose(candidate, device))
                 .OnComplete(completed =>
                 {
                     var path = completed.action.bindings[(int)device].effectivePath ?? "";
@@ -272,6 +284,7 @@ internal static class MenuInput
                 });
             // Kept to the device pressed, instead of widened to "any joystick".
             if (device == MenuDevice.Joystick) operation.WithoutGeneralizingPathOfSelectedControl();
+            _rebindStarted = Time.realtimeSinceStartup;
             _rebind = operation;
             _rebind.Start();
         }
@@ -284,6 +297,68 @@ internal static class MenuInput
     }
 
     public static void CancelRebind() => _rebind?.Cancel();
+
+    // Takes the best candidate that isn't noise; a joystick control pressing during the settle time is noise.
+    private static void Choose(InputActionRebindingExtensions.RebindingOperation operation, MenuDevice device)
+    {
+        var settling = device == MenuDevice.Joystick && Time.realtimeSinceStartup - _rebindStarted < RebindSettleSeconds;
+        foreach (var control in new List<InputControl>(operation.candidates))
+        {
+            if (settling) MarkNoisy(control, "pressed by itself while listening for a binding");
+            if (Noisy.Contains(control)) operation.RemoveCandidate(control);
+        }
+
+        if (operation.candidates.Count > 0) operation.Complete();
+    }
+
+    // A control pressing many times a second with nothing done is noise.
+    private static bool IsNoisy(InputControl? control, float now)
+    {
+        if (control == null) return false;
+        if (Noisy.Contains(control)) return true;
+        if (control.device is Keyboard or Mouse) return false;
+
+        if (!RecentPresses.TryGetValue(control, out var presses)) RecentPresses[control] = presses = new List<float>();
+        presses.Add(now);
+        presses.RemoveAll(time => now - time > NoisyWindowSeconds);
+        if (presses.Count < NoisyPresses) return false;
+
+        MarkNoisy(control, $"pressed {presses.Count} times in a second by itself");
+        return true;
+    }
+
+    // Ignored from now on, and any joystick binding to it dropped.
+    private static void MarkNoisy(InputControl control, string why)
+    {
+        if (!Noisy.Add(control)) return;
+
+        NOVRPlugin.Log.LogInfo($"[NOVR] Menu controls: ignoring {control.path}, {why}.");
+        foreach (var command in Commands)
+        {
+            var path = GetPath(command, MenuDevice.Joystick);
+            try
+            {
+                if (path.Length > 0 && InputControlPath.Matches(path, control)) SetPath(command, MenuDevice.Joystick, "");
+            }
+            catch (Exception)
+            {
+                // A path Unity can't read binds nothing anyway.
+            }
+        }
+    }
+
+    // For Menu Controls: what is being ignored.
+    public static string NoisyNames()
+    {
+        var names = new StringBuilder();
+        foreach (var control in Noisy)
+        {
+            if (names.Length > 0) names.Append(", ");
+            names.Append($"{control.device.displayName.Trim()} {control.displayName}");
+        }
+
+        return names.ToString();
+    }
 
     public static string JoystickNames()
     {
@@ -343,7 +418,8 @@ internal static class MenuInput
             foreach (var entry in entries.Values) entry.SettingChanged += (_, _) => _dirty = true;
         }
 
-        if (_map != null && !_dirty) return;
+        // Not under a binding being listened for; it is rebuilt once that ends.
+        if (_map != null && (!_dirty || IsRebinding)) return;
 
         LogDevicesOnce();
         var enabled = _map?.enabled == true;

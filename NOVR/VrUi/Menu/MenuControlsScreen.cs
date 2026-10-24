@@ -66,10 +66,6 @@ internal sealed class MenuControlsScreen : MenuScreen
 
     protected override void OnShown()
     {
-        var joysticks = MenuInput.JoystickNames();
-        _status.text = joysticks.Length > 0
-            ? $"Joysticks: {joysticks}. Bind your stick's hat and a button in the joystick column."
-            : "No joystick seen. A stick Unity doesn't see can't be bound here.";
         Refresh();
     }
 
@@ -122,6 +118,14 @@ internal sealed class MenuControlsScreen : MenuScreen
 
     private void Refresh()
     {
+        var joysticks = MenuInput.JoystickNames();
+        var noisy = MenuInput.NoisyNames();
+        _status.text = joysticks.Length == 0
+            ? "No joystick seen. A stick Unity doesn't see can't be bound here."
+            : noisy.Length > 0
+                ? $"Ignored, as they press by themselves: {noisy}."
+                : $"Joysticks: {joysticks}. Bind your stick's hat and a button in the joystick column.";
+
         for (var row = 0; row < MenuInput.Commands.Length; row++)
         {
             for (var slot = 0; slot < MenuInput.SlotCount; slot++)
