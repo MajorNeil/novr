@@ -27,10 +27,12 @@ public enum MenuDevice
 }
 
 // The controls of NOVR's menus, kept apart from the game's flight bindings so they are few and plain: each command has a
-// keyboard key, a gamepad button and a joystick button (a HOTAS hat and trigger to start with), each of which can be set
-// from Menu Controls or in the config file ("Menu Controls" section, keyboard | gamepad | joystick as Input System paths).
-// The gamepad's left stick also moves, and Space and the keypad's Enter also select. Only listened to while one of NOVR's
-// menu screens is up. The directions repeat while held, like a held arrow key in a text box.
+// keyboard key, a gamepad button and a joystick button, each of which can be set from Menu Controls or in the config file
+// ("Menu Controls" section, keyboard | gamepad | joystick as Input System paths). The joystick ones start empty and are
+// bound to the one device pressed: a generic "any joystick's hat" matched every stick, throttle and rudder plugged in,
+// and one whose hat rests off centre held Up down. The gamepad's left stick also moves, and Space and the keypad's Enter
+// also select. Only listened to while one of NOVR's menu screens is up. The directions repeat while held after a press,
+// like a held arrow key in a text box.
 internal static class MenuInput
 {
     public const int SlotCount = 3;
@@ -45,6 +47,7 @@ internal static class MenuInput
 
     private static readonly InputAction?[] Actions = new InputAction?[Commands.Length];
     private static readonly bool[] Fired = new bool[Commands.Length];
+    private static readonly bool[] Held = new bool[Commands.Length];
     private static readonly float[] NextRepeat = new float[Commands.Length];
     private static InputActionMap? _map;
     private static InputActionRebindingExtensions.RebindingOperation? _rebind;
@@ -65,16 +68,42 @@ internal static class MenuInput
 
     public static string DefaultBindings(MenuCommand command) => command switch
     {
-        MenuCommand.Up => "<Keyboard>/upArrow | <Gamepad>/dpad/up | <Joystick>/hat/up",
-        MenuCommand.Down => "<Keyboard>/downArrow | <Gamepad>/dpad/down | <Joystick>/hat/down",
-        MenuCommand.Left => "<Keyboard>/leftArrow | <Gamepad>/dpad/left | <Joystick>/hat/left",
-        MenuCommand.Right => "<Keyboard>/rightArrow | <Gamepad>/dpad/right | <Joystick>/hat/right",
-        MenuCommand.Select => "<Keyboard>/enter | <Gamepad>/buttonSouth | <Joystick>/trigger",
+        MenuCommand.Up => "<Keyboard>/upArrow | <Gamepad>/dpad/up |",
+        MenuCommand.Down => "<Keyboard>/downArrow | <Gamepad>/dpad/down |",
+        MenuCommand.Left => "<Keyboard>/leftArrow | <Gamepad>/dpad/left |",
+        MenuCommand.Right => "<Keyboard>/rightArrow | <Gamepad>/dpad/right |",
+        MenuCommand.Select => "<Keyboard>/enter | <Gamepad>/buttonSouth |",
         MenuCommand.Back => "<Keyboard>/escape | <Gamepad>/buttonEast |",
         MenuCommand.PreviousTab => "<Keyboard>/q | <Gamepad>/leftShoulder |",
         MenuCommand.NextTab => "<Keyboard>/e | <Gamepad>/rightShoulder |",
         _ => "| |"
     };
+
+    // The defaults of 0.4.21 to 0.4.23, whose generic joystick part a saved value still holding them drops (Migrate).
+    private static string? OldDefault(MenuCommand command) => command switch
+    {
+        MenuCommand.Up => "<Keyboard>/upArrow | <Gamepad>/dpad/up | <Joystick>/hat/up",
+        MenuCommand.Down => "<Keyboard>/downArrow | <Gamepad>/dpad/down | <Joystick>/hat/down",
+        MenuCommand.Left => "<Keyboard>/leftArrow | <Gamepad>/dpad/left | <Joystick>/hat/left",
+        MenuCommand.Right => "<Keyboard>/rightArrow | <Gamepad>/dpad/right | <Joystick>/hat/right",
+        MenuCommand.Select => "<Keyboard>/enter | <Gamepad>/buttonSouth | <Joystick>/trigger",
+        _ => null
+    };
+
+    public static void Migrate(ConfigEntry<string> entry, MenuCommand command)
+    {
+        var old = OldDefault(command);
+        if (old == null) return;
+
+        var saved = ReadSlots(entry.Value);
+        var oldSlots = ReadSlots(old);
+        for (var slot = 0; slot < SlotCount; slot++)
+        {
+            if (saved[slot] != oldSlots[slot]) return;
+        }
+
+        entry.Value = DefaultBindings(command);
+    }
 
     private static string[] Extras(MenuCommand command) => command switch
     {
@@ -113,10 +142,16 @@ internal static class MenuInput
                 if (action.WasPressedThisFrame())
                 {
                     Fired[index] = true;
+                    Held[index] = true;
                     NextRepeat[index] = now + RepeatDelaySeconds;
                     NoteDevice(action.activeControl?.device);
                 }
-                else if (Repeats(Commands[index]) && action.IsPressed() && now >= NextRepeat[index])
+                else if (!action.IsPressed())
+                {
+                    Held[index] = false;
+                }
+                // Only a press seen here repeats; a control already down when the menu opened doesn't.
+                else if (Held[index] && Repeats(Commands[index]) && now >= NextRepeat[index])
                 {
                     Fired[index] = true;
                     NextRepeat[index] = now + RepeatIntervalSeconds;
@@ -139,6 +174,7 @@ internal static class MenuInput
         _rebind?.Cancel();
         if (_map != null && _map.enabled) _map.Disable();
         Array.Clear(Fired, 0, Fired.Length);
+        Array.Clear(Held, 0, Held.Length);
     }
 
     public static bool Pressed(MenuCommand command) => Fired[(int)command];
@@ -146,7 +182,8 @@ internal static class MenuInput
     public static string GetPath(MenuCommand command, MenuDevice device) =>
         ReadSlots(ConfigFor(command)?.Value ?? DefaultBindings(command))[(int)device];
 
-    // How the binding reads on screen, e.g. "Up Arrow", "A", "Trigger"; empty when there is none.
+    // How the binding reads on screen, e.g. "Up Arrow", "A", "Hat/Up [VKBsim Gladiator EVO R]"; empty when there is none.
+    // Joystick ones name their device, as there can be several.
     public static string GetDisplay(MenuCommand command, MenuDevice device)
     {
         var path = GetPath(command, device);
@@ -154,9 +191,13 @@ internal static class MenuInput
 
         try
         {
-            var display = InputControlPath.ToHumanReadableString(path,
-                InputControlPath.HumanReadableStringOptions.OmitDevice | InputControlPath.HumanReadableStringOptions.UseShortNames);
-            return string.IsNullOrEmpty(display) ? path : display;
+            var options = InputControlPath.HumanReadableStringOptions.UseShortNames;
+            if (device != MenuDevice.Joystick) options |= InputControlPath.HumanReadableStringOptions.OmitDevice;
+            var display = InputControlPath.ToHumanReadableString(path, options);
+            if (string.IsNullOrEmpty(display)) return path;
+
+            while (display.Contains("  ")) display = display.Replace("  ", " ");
+            return display.Replace(" ]", "]").Replace("[ ", "[");
         }
         catch (Exception)
         {
@@ -206,7 +247,7 @@ internal static class MenuInput
             EnsureMap();
             var action = Actions[(int)command]!;
             _map!.Disable();
-            _rebind = action.PerformInteractiveRebinding((int)device)
+            var operation = action.PerformInteractiveRebinding((int)device)
                 .WithExpectedControlType("Button")
                 .WithControlsHavingToMatchPath(SlotDevices[(int)device])
                 .WithControlsExcluding("<Keyboard>/anyKey")
@@ -216,11 +257,12 @@ internal static class MenuInput
                 .WithCancelingThrough("<Keyboard>/escape")
                 .WithMagnitudeHavingToBeGreaterThan(RebindMagnitude)
                 .OnMatchWaitForAnother(0.1f)
-                .OnComplete(operation =>
+                .OnComplete(completed =>
                 {
-                    var path = operation.action.bindings[(int)device].effectivePath ?? "";
+                    var path = completed.action.bindings[(int)device].effectivePath ?? "";
                     EndRebind();
                     SetPath(command, device, path);
+                    NOVRPlugin.Log.LogInfo($"[NOVR] Menu controls: {Name(command)} on {device} is now {path}");
                     finished(true);
                 })
                 .OnCancel(_ =>
@@ -228,6 +270,9 @@ internal static class MenuInput
                     EndRebind();
                     finished(false);
                 });
+            // Kept to the device pressed, instead of widened to "any joystick".
+            if (device == MenuDevice.Joystick) operation.WithoutGeneralizingPathOfSelectedControl();
+            _rebind = operation;
             _rebind.Start();
         }
         catch (Exception exception)

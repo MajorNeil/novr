@@ -13,8 +13,10 @@ using Random = UnityEngine.Random;
 namespace NOVR.VrUi.Menu;
 
 // Out of flight, the menus are in one of the game's own aircraft shelters instead of over a flat picture. The player sits
-// at a desk beside the parked aircraft, its wingtip just off to the right, facing the open door, with the main menu on a
-// briefing board in front (the menu is anchored to the seat while this is up, NativeVrUiRoot). The shelter, the aircraft,
+// at a desk by the left wall behind the parked aircraft, turned toward the open door, with the main menu on a briefing
+// board in front and the aircraft beyond it (the menu is anchored to the seat while this is up, NativeVrUiRoot). The
+// shelter's floor and walls are found with raycasts against copies of its own colliders, so the seat, desk and board
+// stand clear of them. The shelter, the aircraft,
 // the buildings and vehicles across the apron are copied from the game's prefabs (VisualClone); the desk and board, the
 // dusk sky, the hills and the airfield are made here. The door rolls open when the menu comes up and shut while a
 // mission loads (LoadingScreenPatch), and now and then the game's aircraft fly past the field with their engine sound.
@@ -24,8 +26,11 @@ public class MenuEnvironment : NOVRBehaviour
 {
     // Seated eye height above the floor.
     private const float EyeHeight = 1.3f;
-    // From the seat out to the aircraft's wingtip.
-    private const float SeatGap = 1.6f;
+    // How far the seat stays from the wall, and how far behind the tail it is when there is room.
+    private const float WallClearance = 1.3f;
+    private const float BehindTail = 2.5f;
+    // The shelter's copied colliders, on a layer no camera draws and nothing else casts against.
+    private const int ColliderLayer = (int)LayerHelper.Layers.VrUiCapture;
     private const float OpenDelaySeconds = 1.2f;
     private const float OpenSeconds = 7f;
     private const float CloseSeconds = 3f;
@@ -62,6 +67,7 @@ public class MenuEnvironment : NOVRBehaviour
     public static string? FeaturedAircraft { get; private set; }
 
     private readonly List<Door> _doors = new();
+    private readonly List<Collider> _shelterColliders = new();
     private readonly List<Flyby> _flybys = new();
     // Kept after their pass and flown again, so each aircraft type is copied at most once per wingman.
     private readonly Dictionary<AircraftDefinition, List<GameObject>> _flybyClones = new();
@@ -71,6 +77,9 @@ public class MenuEnvironment : NOVRBehaviour
     private Transform? _spawn;
     private Bounds _shelterBounds;
     private float _insideHalfWidth = 10f;
+    // The floor under the spawn point, in the site frame (the spawn point is at 0).
+    private float _floor;
+    private bool _loggedLayout;
     private AircraftDefinition[] _hangarAircraft = Array.Empty<AircraftDefinition>();
     private GameObject? _featured;
     private Transform? _board;
@@ -209,6 +218,9 @@ public class MenuEnvironment : NOVRBehaviour
             _site.SetParent(_root.transform, false);
 
             BuildShelter();
+            _root.SetActive(true);
+            _floor = MeasureFloor();
+            _root.SetActive(false);
             _lit = LitTemplate();
             _unlit = UnlitTemplate();
             BuildSun();
@@ -235,9 +247,10 @@ public class MenuEnvironment : NOVRBehaviour
     {
         _visible = true;
         _root!.SetActive(true);
-        PlaceFeaturedAircraft();
+        // Shut first, so the seat is measured against the closed door.
         _doorMovingNow = false;
         ApplyDoor(0f);
+        PlaceFeaturedAircraft();
         _openAt = Time.unscaledTime + OpenDelaySeconds;
         _nextFlyby = Time.unscaledTime + Random.Range(8f, 20f);
         _logBoardAt = Time.unscaledTime + 3f;
@@ -354,7 +367,7 @@ public class MenuEnvironment : NOVRBehaviour
         }
 
         var map = new Dictionary<Transform, Transform>();
-        _shelter = VisualClone.Create(best.unitPrefab, _site!, map).transform;
+        _shelter = VisualClone.Create(best.unitPrefab, _site!, map, _shelterColliders, ColliderLayer).transform;
         _hangarAircraft = GetField<AircraftDefinition[]>(bestHangar, "availableAircraft") ?? Array.Empty<AircraftDefinition>();
 
         var spawn = GetField<Transform>(bestHangar, "spawnTransform");
@@ -435,7 +448,8 @@ public class MenuEnvironment : NOVRBehaviour
         if (aircraft != null && _spawn != null)
         {
             _featured = VisualClone.Create(aircraft.unitPrefab, _spawn);
-            _featured.transform.localPosition = Vector3.up * aircraft.spawnOffset.y + Vector3.forward * aircraft.spawnOffset.z;
+            // On the floor found under the spawn point, which the game's spawn drops it onto.
+            _featured.transform.localPosition = Vector3.up * (aircraft.spawnOffset.y + _floor) + Vector3.forward * aircraft.spawnOffset.z;
             _featured.transform.localRotation = Quaternion.Euler(aircraft.restRotation);
             FeaturedAircraft = aircraft.unitName;
             if (TryGetBounds(_featured, _site, out var bounds))
@@ -446,11 +460,101 @@ public class MenuEnvironment : NOVRBehaviour
             }
         }
 
-        // Level with the middle of the aircraft, a little forward, off its left wingtip, kept clear of the wall.
-        var seat = new Vector3(-Mathf.Min(halfSpan + SeatGap, Mathf.Max(2f, _insideHalfWidth - 1.5f)), EyeHeight, Mathf.Lerp(-tail, nose, 0.55f));
-        _site.localRotation = Quaternion.identity;
-        _site.localPosition = -seat;
+        var seat = PlaceSeat(halfSpan, nose, tail, out var yaw);
+        var turn = Quaternion.Euler(0f, -yaw, 0f);
+        _site.localRotation = turn;
+        _site.localPosition = -(turn * seat);
     }
+
+    // By the left wall behind the tail, turned toward the door; beside the aircraft if there is no room behind it. Then
+    // turned further right while the board or desk would reach the wall.
+    private Vector3 PlaceSeat(float halfSpan, float nose, float tail, out float yaw)
+    {
+        SetCollidersEnabled(true);
+        try
+        {
+            var eye = _floor + EyeHeight;
+            var back = -CastOr(new Vector3(-halfSpan, eye, 0f), Vector3.back, -_shelterBounds.min.z * 0.8f);
+            var z = Mathf.Max(-(tail + BehindTail), back + WallClearance);
+            var behind = z <= -tail - 0.8f;
+            if (!behind) z = Mathf.Lerp(-tail, nose, 0.3f);
+
+            var wall = Mathf.Min(CastOr(new Vector3(0f, eye, z), Vector3.left, _insideHalfWidth),
+                CastOr(new Vector3(0f, _floor + 0.75f, z), Vector3.left, _insideHalfWidth));
+            var x = -wall + WallClearance;
+            var door = CastOr(new Vector3(0f, eye, 0f), Vector3.forward, _doorZ);
+            var seat = new Vector3(x, eye, z);
+            yaw = Mathf.Clamp(Mathf.Atan2(-x, door - z) * Mathf.Rad2Deg, 0f, 45f);
+            for (var step = 0; step < 8 && !Clear(seat, yaw); step++) yaw += 5f;
+
+            if (!_loggedLayout)
+            {
+                _loggedLayout = true;
+                NOVRPlugin.Log.LogInfo($"[NOVR] Menu hangar: {_shelterColliders.Count} colliders; floor {_floor:0.00} m from the spawn point, back wall {back:0.0} m, " +
+                                       $"left wall {-wall:0.0} m, door {door:0.0} m; seat at {x:0.0}, {z:0.0} m ({(behind ? "behind" : "beside")} the aircraft), turned {yaw:0} deg.");
+            }
+
+            return seat;
+        }
+        finally
+        {
+            SetCollidersEnabled(false);
+        }
+    }
+
+    // Whether the board's far edge and the desk's corner, seen from the seat turned by yaw, are this side of any wall.
+    private bool Clear(Vector3 seat, float yaw)
+    {
+        var turn = Quaternion.Euler(0f, yaw, 0f);
+        var unit = NativeVrUiRoot.CanvasUnitMeters;
+        var boardEdge = new Vector3((MainMenuScreen.RailCenter.x - MainMenuScreen.RailSize.x / 2f - 60f) * unit, NativeVrUiRoot.MenuHeightOffset,
+            NativeVrUiRoot.MenuDistance + 0.1f);
+        var points = new[] { boardEdge, boardEdge + Vector3.down * 0.9f, new Vector3(-0.75f, -EyeHeight + 0.75f, 1.15f) };
+        foreach (var point in points)
+        {
+            var direction = turn * point;
+            if (Cast(seat, direction.normalized, direction.magnitude, out _)) return false;
+        }
+
+        return true;
+    }
+
+    private float MeasureFloor()
+    {
+        SetCollidersEnabled(true);
+        try
+        {
+            return Cast(new Vector3(0f, 4f, 0f), Vector3.down, 12f, out var hit) ? 4f - hit : 0f;
+        }
+        finally
+        {
+            SetCollidersEnabled(false);
+        }
+    }
+
+    private void SetCollidersEnabled(bool enabled)
+    {
+        foreach (var collider in _shelterColliders)
+        {
+            if (collider != null) collider.enabled = enabled;
+        }
+
+        if (enabled) Physics.SyncTransforms();
+    }
+
+    // A ray in the site frame against the shelter's colliders.
+    private bool Cast(Vector3 origin, Vector3 direction, float distance, out float hit)
+    {
+        hit = distance;
+        if (_site == null || _shelterColliders.Count == 0) return false;
+        if (!Physics.Raycast(_site.TransformPoint(origin), _site.TransformDirection(direction), out var info, distance, 1 << ColliderLayer,
+                QueryTriggerInteraction.Ignore)) return false;
+
+        hit = info.distance;
+        return true;
+    }
+
+    private float CastOr(Vector3 origin, Vector3 direction, float fallback) => Cast(origin, direction, 80f, out var hit) ? hit : fallback;
 
     private AircraftDefinition? PickAircraft(AircraftDefinition[] preferred)
     {
@@ -529,7 +633,7 @@ public class MenuEnvironment : NOVRBehaviour
     private void BuildSun()
     {
         var sun = new GameObject("Sun");
-        sun.transform.SetParent(_root!.transform, false);
+        sun.transform.SetParent(_site!, false);
         sun.transform.localRotation = SunRotation;
         _sun = sun.AddComponent<Light>();
         _sun.type = LightType.Directional;
@@ -548,17 +652,17 @@ public class MenuEnvironment : NOVRBehaviour
         if (_unlit == null) return;
 
         var toSun = -(SunRotation * Vector3.forward);
-        AddMesh(_root!.transform, "Sky", SkyMesh(toSun), UnlitMaterial(Color.white, 2980), Vector3.zero, SkyRadius);
+        AddMesh(_site!, "Sky", SkyMesh(toSun), UnlitMaterial(Color.white, 2980), Vector3.zero, SkyRadius);
 
         var disc = GameObject.CreatePrimitive(PrimitiveType.Sphere);
         Destroy(disc.GetComponent<Collider>());
         disc.name = "Sun Disc";
-        disc.transform.SetParent(_root.transform, false);
+        disc.transform.SetParent(_site!, false);
         disc.transform.localPosition = toSun * (SkyRadius - 200f);
         disc.transform.localScale = Vector3.one * 90f;
         SetupRenderer(disc.GetComponent<MeshRenderer>(), UnlitMaterial(SunDiscColor, 2981));
 
-        AddMesh(_root.transform, "Hills", HillsMesh(toSun), UnlitMaterial(Color.white, 2990), Vector3.zero, 1f);
+        AddMesh(_site!, "Hills", HillsMesh(toSun), UnlitMaterial(Color.white, 2990), Vector3.zero, 1f);
     }
 
     private static Mesh SkyMesh(Vector3 toSun)
@@ -646,6 +750,7 @@ public class MenuEnvironment : NOVRBehaviour
     {
         var outside = new GameObject("Outside").transform;
         outside.SetParent(_site!, false);
+        outside.localPosition = Vector3.up * _floor;
 
         // Slabs whose tops are far enough apart that the distant ones don't flicker against each other: the ground 30 cm
         // under the shelter floor, the apron and taxiway just under it, the runway just over the ground.

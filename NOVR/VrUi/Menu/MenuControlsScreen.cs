@@ -67,7 +67,9 @@ internal sealed class MenuControlsScreen : MenuScreen
     protected override void OnShown()
     {
         var joysticks = MenuInput.JoystickNames();
-        _status.text = joysticks.Length > 0 ? $"Joysticks: {joysticks}" : "No joystick seen. A stick Unity doesn't see can't be bound here.";
+        _status.text = joysticks.Length > 0
+            ? $"Joysticks: {joysticks}. Bind your stick's hat and a button in the joystick column."
+            : "No joystick seen. A stick Unity doesn't see can't be bound here.";
         Refresh();
     }
 

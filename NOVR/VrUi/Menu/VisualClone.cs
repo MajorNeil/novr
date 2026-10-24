@@ -27,8 +27,11 @@ internal static class VisualClone
     public static int SkippedParts { get; private set; }
     public static readonly HashSet<string> SkippedReasons = new();
 
-    // map, when given, gets each prefab transform's copy, to find the copies of parts the prefab's scripts name.
-    public static GameObject Create(GameObject prefab, Transform parent, Dictionary<Transform, Transform>? map = null)
+    // map, when given, gets each prefab transform's copy, to find the copies of parts the prefab's scripts name. colliders,
+    // when given, gets copies of the prefab's solid colliders, disabled, on their own objects on colliderLayer (so they
+    // don't change how the copy draws), to measure the model with raycasts.
+    public static GameObject Create(GameObject prefab, Transform parent, Dictionary<Transform, Transform>? map = null,
+        List<Collider>? colliders = null, int colliderLayer = 0)
     {
         var skipped = new HashSet<Renderer>();
         foreach (var lodGroup in prefab.GetComponentsInChildren<LODGroup>(true))
@@ -46,13 +49,14 @@ internal static class VisualClone
             }
         }
 
-        var root = Copy(prefab.transform, parent, skipped, map);
+        var root = Copy(prefab.transform, parent, skipped, map, colliders, colliderLayer);
         root.transform.localPosition = Vector3.zero;
         root.transform.localRotation = Quaternion.identity;
         return root;
     }
 
-    private static GameObject Copy(Transform source, Transform parent, HashSet<Renderer> skipped, Dictionary<Transform, Transform>? map)
+    private static GameObject Copy(Transform source, Transform parent, HashSet<Renderer> skipped, Dictionary<Transform, Transform>? map,
+        List<Collider>? colliders, int colliderLayer)
     {
         var copy = new GameObject(source.name);
         var transform = copy.transform;
@@ -64,11 +68,12 @@ internal static class VisualClone
 
         CopyMesh(source, copy, skipped);
         if (source.TryGetComponent<Light>(out var light)) CopyLight(light, copy);
+        if (colliders != null) CopyColliders(source, transform, colliders, colliderLayer);
 
         for (var index = 0; index < source.childCount; index++)
         {
             var child = source.GetChild(index);
-            if (child.gameObject.activeSelf) Copy(child, transform, skipped, map);
+            if (child.gameObject.activeSelf) Copy(child, transform, skipped, map, colliders, colliderLayer);
         }
 
         return copy;
@@ -111,6 +116,58 @@ internal static class VisualClone
         copied.shadowCastingMode = renderer.shadowCastingMode;
         copied.receiveShadows = renderer.receiveShadows;
         copied.enabled = renderer.enabled;
+    }
+
+    // The game spawns these prefabs with these colliders, so their meshes are fit for physics at run time.
+    private static void CopyColliders(Transform source, Transform copy, List<Collider> colliders, int layer)
+    {
+        GameObject? owner = null;
+        foreach (var collider in source.GetComponents<Collider>())
+        {
+            if (!collider.enabled || collider.isTrigger) continue;
+
+            if (owner == null)
+            {
+                owner = new GameObject("Collider") { layer = layer };
+                owner.transform.SetParent(copy, false);
+            }
+
+            Collider? copied = null;
+            switch (collider)
+            {
+                case BoxCollider box:
+                    var copiedBox = owner.AddComponent<BoxCollider>();
+                    copiedBox.center = box.center;
+                    copiedBox.size = box.size;
+                    copied = copiedBox;
+                    break;
+                case SphereCollider sphere:
+                    var copiedSphere = owner.AddComponent<SphereCollider>();
+                    copiedSphere.center = sphere.center;
+                    copiedSphere.radius = sphere.radius;
+                    copied = copiedSphere;
+                    break;
+                case CapsuleCollider capsule:
+                    var copiedCapsule = owner.AddComponent<CapsuleCollider>();
+                    copiedCapsule.center = capsule.center;
+                    copiedCapsule.radius = capsule.radius;
+                    copiedCapsule.height = capsule.height;
+                    copiedCapsule.direction = capsule.direction;
+                    copied = copiedCapsule;
+                    break;
+                case MeshCollider mesh when mesh.sharedMesh != null:
+                    var copiedMesh = owner.AddComponent<MeshCollider>();
+                    copiedMesh.sharedMesh = mesh.sharedMesh;
+                    copiedMesh.convex = mesh.convex;
+                    copied = copiedMesh;
+                    break;
+            }
+
+            if (copied == null) continue;
+
+            copied.enabled = false;
+            colliders.Add(copied);
+        }
     }
 
     public static bool Drawable(Material? material) =>
