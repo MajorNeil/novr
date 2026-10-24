@@ -109,6 +109,25 @@ internal sealed class MenuList
         return true;
     }
 
+    // Up (-1) or Down (1) off the top or bottom row scrolls instead, while there is more that way; true when it did.
+    public bool StepPast(MenuButton row, int step)
+    {
+        var index = Rows.IndexOf(row);
+        if (index < 0) return false;
+        if (step < 0 && index == 0) return Scroll(-1, sound: true);
+        if (step > 0 && index == Rows.Count - 1) return Scroll(1, sound: true);
+        return false;
+    }
+
+    // The row showing an entry, scrolled to; null when there is no such entry.
+    public MenuButton? RowFor(int entry)
+    {
+        if (entry < 0 || entry >= Count) return null;
+
+        ScrollTo(entry);
+        return Rows[entry - Offset];
+    }
+
     public void ScrollTo(int entry)
     {
         if (entry < 0) return;

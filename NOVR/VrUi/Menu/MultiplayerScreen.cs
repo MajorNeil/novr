@@ -14,32 +14,39 @@ using UnityEngine.InputSystem;
 
 namespace NOVR.VrUi.Menu;
 
-// Multiplayer in the game's menu style: the server browser, its filters and hosting a lobby, chosen from the left-hand
-// panel. The browser lists the lobbies the game's own browser has found (it keeps searching behind this, and Refresh asks
-// it again), sorted by a click on a column's heading, with the focused or picked one described on the right. Select on a
-// lobby picks it and goes to Join; a password is asked for when it has one. The filters are settings rows, as in the
-// settings. Hosting takes a multiplayer mission, a name, a size, who can see it and a password, and hosts the lobby as
-// the game does (NativeMultiplayerPanel did the same).
+// Multiplayer in the game's menu style, laid out and used like the single player screen: the sections (server browser,
+// filters, creating a lobby) down the left-hand panel, and the chosen one in the panel to its right. The browser is one
+// column (how the lobbies are sorted, a search, then the lobbies) beside the focused or picked lobby and its Join.
+// Up and Down run down a column; Right goes on to Join, Left back to the list and then to the sections; Back goes the
+// same way out. Select or Right on a lobby picks it and goes to Join; Select on the picked one joins. The lobbies are the ones the game's own
+// browser has found (it keeps looking behind this; Refresh asks it again). They keep their places while their player
+// counts change, so the focus stays on the lobby it is on; a change of sort, or Refresh, sorts them again.
+// The filters are settings rows, as in the settings. Creating a lobby takes a multiplayer mission from the list, then a
+// name, a size, who can see it and a password, and hosts it as the game does (NativeMultiplayerPanel did the same).
 internal sealed class MultiplayerScreen : MenuScreen
 {
     private const float ContentX = 300f;
     private static readonly Vector2 ContentSize = new(1200f, 960f);
+    private const float TitleY = 410f;
     private const float RailButtonWidth = 440f;
     private const float RailButtonHeight = 54f;
     private const float RailStep = 62f;
     private const float RefreshSeconds = 1f;
-    private const float ListX = -200f;
-    private const float ListWidth = 780f;
-    private const float DetailsX = 400f;
-    private const float DetailsWidth = 380f;
-    private const int Rows = 11;
-    private const float RowHeight = 48f;
+    private const float ListX = -240f;
+    private const float ListWidth = 680f;
+    private const float DetailsX = 370f;
+    private const float DetailsWidth = 420f;
+    private const float RowHeight = 50f;
     private const float RowStep = 54f;
+    private static readonly Vector2 SettingSize = new(ListWidth, 56f);
     private static readonly float[] FilterColumnX = { -296f, 296f };
     private static readonly Vector2 FilterRowSize = new(570f, 56f);
     private const float FilterFirstY = 330f;
     private const float FilterRowStep = 64f;
     private const int FiltersPerColumn = 7;
+    private const float HostListX = -300f;
+    private const float HostColumnX = 300f;
+    private const float HostWidth = 560f;
 
     private static readonly FieldInfo? ShownField = typeof(LobbyListItem).GetField("shown", BindingFlags.Instance | BindingFlags.NonPublic);
     private static readonly int?[] MaxPings = { null, 75, 150, 250, 400 };
@@ -51,13 +58,22 @@ internal sealed class MultiplayerScreen : MenuScreen
         (HostLobbyVisibility.Private, "PRIVATE")
     };
 
-    // The list's columns, from a row's centre, which the headings share.
+    private static readonly (Sort Sort, bool Ascending, string Label)[] Sorts =
+    {
+        (Sort.Players, false, "MOST PLAYERS"),
+        (Sort.Ping, true, "LOWEST PING"),
+        (Sort.Lobby, true, "LOBBY NAME"),
+        (Sort.Mission, true, "MISSION"),
+        (Sort.Players, true, "FEWEST PLAYERS")
+    };
+
+    // The list's columns, from a row's centre; the labels over them share them.
     private static readonly MenuList.Column[] Columns =
     {
-        new(-200f, 350f),
-        new(85f, 210f, dim: true),
-        new(255f, 110f, TextAlignmentOptions.Center),
-        new(335f, 80f, TextAlignmentOptions.Center, dim: true)
+        new(-170f, 320f),
+        new(75f, 160f, dim: true),
+        new(210f, 100f, TextAlignmentOptions.Center),
+        new(290f, 80f, TextAlignmentOptions.Center, dim: true)
     };
 
     private enum View
@@ -135,18 +151,30 @@ internal sealed class MultiplayerScreen : MenuScreen
     private readonly NativeGameActionAdapter _actions;
     private readonly Dictionary<View, MenuButton> _viewButtons = new();
     private readonly Dictionary<View, RectTransform> _views = new();
-    private readonly List<Lobby> _lobbies = new();
-    private readonly List<Lobby> _shown = new();
-    private readonly List<MenuSetting> _filters = new();
+    private readonly Dictionary<View, string> _titles = new()
+    {
+        [View.Browser] = "SERVER BROWSER",
+        [View.Filters] = "FILTERS",
+        [View.Host] = "CREATE LOBBY"
+    };
+    private readonly List<MenuButton> _rail = new();
+    private readonly List<MenuButton> _browserColumn = new();
+    private readonly List<MenuButton> _details = new();
     private readonly List<MenuButton> _filterOrder = new();
-    private readonly List<(Sort Sort, string Label, MenuButton Button)> _headings = new();
+    private readonly List<MenuButton> _hostColumn = new();
+    private readonly List<Lobby> _lobbies = new();
+    private List<Lobby> _shown = new();
+    private readonly List<MenuSetting> _filters = new();
     private readonly List<(MissionKey Key, MissionQuickLoad Mission)> _hostMissions = new();
     private readonly List<MenuSetting> _hostSettings = new();
-    private readonly MenuList _list;
+    private readonly TextMeshProUGUI _title;
+    private readonly TextMeshProUGUI _count;
+    private readonly MenuSetting _sort;
     private readonly MenuField _search;
+    private readonly MenuList _list;
     private readonly TextMeshProUGUI _position;
     private readonly TextMeshProUGUI _status;
-    private readonly TextMeshProUGUI _title;
+    private readonly TextMeshProUGUI _lobbyName;
     private readonly TextMeshProUGUI _mission;
     private readonly TextMeshProUGUI _facts;
     private readonly TextMeshProUGUI _description;
@@ -168,8 +196,7 @@ internal sealed class MultiplayerScreen : MenuScreen
     private readonly List<MenuButton> _popupButtons = new();
 
     private View _view = View.Browser;
-    private Sort _sort = Sort.Players;
-    private bool _ascending;
+    private int _sortIndex;
     private bool _showPve = true;
     private bool _showPvp = true;
     private bool _showOpen = true;
@@ -184,6 +211,8 @@ internal sealed class MultiplayerScreen : MenuScreen
     private int _distance;
     private LobbyInstance? _picked;
     private Lobby? _joining;
+    private MenuButton? _lastListFocus;
+    private MenuButton? _lastHostListFocus;
     private int _hostPicked = -1;
     private int _hostMaxPlayers = 8;
     private int _hostVisibility;
@@ -204,52 +233,65 @@ internal sealed class MultiplayerScreen : MenuScreen
         MenuKit.Image(rail, "Title Rule", MenuStyle.TextDim.WithAlpha(0.35f), new Vector2(0f, top - 112f), new Vector2(RailButtonWidth, 2f));
 
         var y = top - 160f;
-        AddViewButton(rail, View.Browser, "SERVER BROWSER", ref y);
-        AddViewButton(rail, View.Filters, "FILTERS", ref y);
-        AddViewButton(rail, View.Host, "CREATE LOBBY", ref y);
+        AddViewButton(rail, View.Browser, ref y);
+        AddViewButton(rail, View.Filters, ref y);
+        AddViewButton(rail, View.Host, ref y);
         y -= 18f;
-        Add(MenuKit.Button(rail, "Refresh", "REFRESH", new Vector2(0f, y), new Vector2(RailButtonWidth, RailButtonHeight), Refresh,
-            MenuButton.Look.Secondary));
+        _rail.Add(Add(MenuKit.Button(rail, "Refresh", "REFRESH", new Vector2(0f, y), new Vector2(RailButtonWidth, RailButtonHeight), Refresh,
+            MenuButton.Look.Secondary)));
         y -= RailStep + 18f;
-        Add(MenuKit.Button(rail, "Back", "BACK", new Vector2(0f, y), new Vector2(RailButtonWidth, 56f), Leave));
+        _rail.Add(Add(MenuKit.Button(rail, "Back", "BACK", new Vector2(0f, y), new Vector2(RailButtonWidth, 56f), Leave)));
         _prompts = MenuKit.Text(rail, "Prompts", "", MenuStyle.SmallSize, MenuStyle.TextDim, TextAlignmentOptions.Left,
             new Vector2(0f, -top + 40f), new Vector2(RailButtonWidth, 34f));
 
         var content = MenuKit.Panel(Root, "Content", new Vector2(ContentX, 0f), ContentSize).rectTransform;
+        _title = MenuKit.Text(content, "Title", "", MenuStyle.HeadingSize, MenuStyle.Text, TextAlignmentOptions.Left,
+            new Vector2(0f, TitleY), new Vector2(ContentSize.x - 80f, 64f), heading: true);
+        _count = MenuKit.Text(content, "Count", "", MenuStyle.SmallSize, MenuStyle.TextDim, TextAlignmentOptions.Right,
+            new Vector2(0f, TitleY), new Vector2(ContentSize.x - 80f, 64f));
 
-        // The server browser.
+        // The server browser: one column of how they're sorted, a search and the lobbies, beside the lobby and Join.
         var browser = AddView(content, View.Browser);
-        _search = new MenuField(browser, "Search", "SEARCH", "Lobby, mission or map", new Vector2(ListX, 400f), new Vector2(ListWidth, 56f), 190f);
-        _search.Changed += _ => ApplyFilters(fromTop: true);
-        Add(_search.Button);
+        _sort = new MenuSetting(browser, "SORT", new Vector2(ListX, 340f), SettingSize, 280f, () => Sorts[_sortIndex].Label,
+            direction =>
+            {
+                _sortIndex = Wrap(_sortIndex + direction, Sorts.Length);
+                ApplyFilters(resort: true);
+            }, null, () => _sort?.Refresh());
+        _search = new MenuField(browser, "Search", "SEARCH", "Lobby, mission or map", new Vector2(ListX, 276f), SettingSize, 190f);
+        _search.Changed += _ => ApplyFilters(resort: true);
+        _browserColumn.Add(Add(_sort.Button));
+        _browserColumn.Add(Add(_search.Button));
+
         var rowX = ListX - 8f;
-        AddHeading(browser, Sort.Lobby, "LOBBY", rowX);
-        AddHeading(browser, Sort.Mission, "MISSION", rowX);
-        AddHeading(browser, Sort.Players, "PLAYERS", rowX);
-        AddHeading(browser, Sort.Ping, "PING", rowX);
-        _list = new MenuList(browser, "Lobby List", new Vector2(ListX, 310f - (RowHeight + (Rows - 1) * RowStep) / 2f), ListWidth, Rows,
-            RowHeight, RowStep, Columns, FillLobby);
-        _list.Activated += PickLobby;
-        foreach (var row in _list.Rows) Add(row);
+        string[] labels = { "LOBBY", "MISSION", "PLAYERS", "PING" };
+        for (var index = 0; index < labels.Length; index++)
+        {
+            MenuKit.Text(browser, labels[index], labels[index], MenuStyle.SmallSize, MenuStyle.Accent, Columns[index].Alignment,
+                new Vector2(rowX + Columns[index].X, 228f), new Vector2(Columns[index].Width, 32f), heading: true);
+        }
+
+        _list = new MenuList(browser, "Lobby List", ListCenter(204f, 9), ListWidth, 9, RowHeight, RowStep, Columns, FillLobby);
+        _list.Activated += entry => PickLobby(entry, joinIfPicked: true);
+        foreach (var row in _list.Rows) _browserColumn.Add(Add(row));
         _position = MenuKit.Text(browser, "Position", "", MenuStyle.SmallSize, MenuStyle.TextDim, TextAlignmentOptions.Left,
-            new Vector2(ListX, -312f), new Vector2(ListWidth, 32f));
+            new Vector2(ListX, -306f), new Vector2(ListWidth, 32f));
         _status = MenuKit.Text(browser, "Status", "", MenuStyle.SmallSize, MenuStyle.TextDim, TextAlignmentOptions.TopLeft,
-            new Vector2(ListX, -380f), new Vector2(ListWidth, 70f), wrap: true);
+            new Vector2(ListX, -385f), new Vector2(ListWidth, 70f), wrap: true);
 
-        _title = MenuKit.Text(browser, "Lobby", "", MenuStyle.ButtonSize, MenuStyle.Text, TextAlignmentOptions.TopLeft,
-            new Vector2(DetailsX, 385f), new Vector2(DetailsWidth, 96f), heading: true, wrap: true);
+        _lobbyName = MenuKit.Text(browser, "Lobby", "", MenuStyle.ButtonSize, MenuStyle.Text, TextAlignmentOptions.TopLeft,
+            new Vector2(DetailsX, 330f), new Vector2(DetailsWidth, 90f), heading: true, wrap: true);
         _mission = MenuKit.Text(browser, "Mission", "", MenuStyle.BodySize, MenuStyle.Accent, TextAlignmentOptions.TopLeft,
-            new Vector2(DetailsX, 290f), new Vector2(DetailsWidth, 72f), wrap: true);
+            new Vector2(DetailsX, 252f), new Vector2(DetailsWidth, 64f), wrap: true);
         _facts = MenuKit.Text(browser, "Facts", "", MenuStyle.SmallSize, MenuStyle.TextDim, TextAlignmentOptions.TopLeft,
-            new Vector2(DetailsX, 190f), new Vector2(DetailsWidth, 110f), wrap: true);
+            new Vector2(DetailsX, 165f), new Vector2(DetailsWidth, 100f), wrap: true);
         _description = MenuKit.Text(browser, "Description", "", MenuStyle.SmallSize, MenuStyle.Text, TextAlignmentOptions.TopLeft,
-            new Vector2(DetailsX, -95f), new Vector2(DetailsWidth, 440f), wrap: true);
+            new Vector2(DetailsX, -70f), new Vector2(DetailsWidth, 340f), wrap: true);
         _join = Add(MenuKit.Button(browser, "Join", "JOIN", new Vector2(DetailsX, -400f), new Vector2(DetailsWidth, 62f), Join));
+        _details.Add(_join);
 
-        // The filters.
+        // The filters, as settings rows.
         var filters = AddView(content, View.Filters);
-        MenuKit.Text(filters, "Title", "FILTERS", MenuStyle.HeadingSize, MenuStyle.Text, TextAlignmentOptions.Left,
-            new Vector2(0f, ContentSize.y / 2f - 70f), new Vector2(ContentSize.x - 80f, 64f), heading: true);
         AddToggle(filters, "PVE", () => _showPve, value => _showPve = value);
         AddToggle(filters, "PVP", () => _showPvp, value => _showPvp = value);
         AddToggle(filters, "OPEN", () => _showOpen, value => _showOpen = value);
@@ -260,42 +302,41 @@ internal sealed class MultiplayerScreen : MenuScreen
         AddToggle(filters, "PLAYER HOSTED", () => _showPlayerHosted, value => _showPlayerHosted = value);
         AddToggle(filters, "HIDE FULL", () => _hideFull, value => _hideFull = value);
         AddToggle(filters, "HIDE EMPTY", () => _hideEmpty, value => _hideEmpty = value);
-        AddChoice(filters, "MAX PING", () => MaxPings[_maxPing] is { } ping ? $"{ping} MS" : "ANY",
+        AddFilter(filters, "MAX PING", () => MaxPings[_maxPing] is { } ping ? $"{ping} MS" : "ANY",
             direction => _maxPing = Wrap(_maxPing + direction, MaxPings.Length));
-        AddChoice(filters, "DISTANCE", () => Distances[_distance].Label, direction => _distance = Wrap(_distance + direction, Distances.Length));
-        AddChoice(filters, "SORT BY", () => SortLabel(_sort), direction => SetSort((Sort)Wrap((int)_sort + direction, 4), keepOrder: true));
-        AddChoice(filters, "ORDER", () => _ascending ? "ASCENDING" : "DESCENDING", _ => _ascending = !_ascending);
+        AddFilter(filters, "DISTANCE", () => Distances[_distance].Label, direction => _distance = Wrap(_distance + direction, Distances.Length));
         _filtersSummary = MenuKit.Text(filters, "Summary", "", MenuStyle.SmallSize, MenuStyle.TextDim, TextAlignmentOptions.Left,
             new Vector2(0f, -ContentSize.y / 2f + 70f), new Vector2(ContentSize.x - 80f, 34f));
 
-        // Hosting.
+        // Creating a lobby: the mission list, beside a column of its settings ending in Host.
         var host = AddView(content, View.Host);
-        MenuKit.Text(host, "Missions Title", "MISSION", MenuStyle.SmallSize, MenuStyle.Accent, TextAlignmentOptions.Left,
-            new Vector2(-300f, 410f), new Vector2(560f, 32f), heading: true);
-        _hostList = new MenuList(host, "Host Missions", new Vector2(-300f, 380f - (RowHeight + (Rows - 1) * RowStep) / 2f), 560f, Rows,
-            RowHeight, RowStep, new[] { new MenuList.Column(0f, 500f) }, FillHostMission);
+        _hostList = new MenuList(host, "Host Missions", new Vector2(HostListX, ListCenter(340f, 10).y), HostWidth, 10, RowHeight, RowStep,
+            new[] { new MenuList.Column(0f, HostWidth - 60f) }, FillHostMission);
         _hostList.Activated += PickHostMission;
         foreach (var row in _hostList.Rows) Add(row);
         _hostPosition = MenuKit.Text(host, "Position", "", MenuStyle.SmallSize, MenuStyle.TextDim, TextAlignmentOptions.Left,
-            new Vector2(-300f, -244f), new Vector2(560f, 32f));
-        _hostTitle = MenuKit.Text(host, "Mission", "", MenuStyle.ButtonSize, MenuStyle.Text, TextAlignmentOptions.Left,
-            new Vector2(300f, 400f), new Vector2(560f, 56f), heading: true);
+            new Vector2(HostListX, -226f), new Vector2(HostWidth, 32f));
+        _hostTitle = MenuKit.Text(host, "Mission", "", MenuStyle.BodySize, MenuStyle.Accent, TextAlignmentOptions.Left,
+            new Vector2(HostColumnX, 340f), new Vector2(HostWidth, 40f));
         _hostDescription = MenuKit.Text(host, "Description", "", MenuStyle.SmallSize, MenuStyle.TextDim, TextAlignmentOptions.TopLeft,
-            new Vector2(300f, 270f), new Vector2(560f, 180f), wrap: true);
-        _hostName = new MenuField(host, "Lobby Name", "NAME", "Lobby name", new Vector2(300f, 130f), new Vector2(560f, 56f), 150f, characterLimit: 128);
-        Add(_hostName.Button);
-        AddHostSetting(host, "MAX PLAYERS", 66f, () => $"{_hostMaxPlayers}", direction =>
+            new Vector2(HostColumnX, 255f), new Vector2(HostWidth, 120f), wrap: true);
+        _hostName = new MenuField(host, "Lobby Name", "NAME", "Lobby name", new Vector2(HostColumnX, 150f), new Vector2(HostWidth, 56f), 150f,
+            characterLimit: 128);
+        _hostColumn.Add(Add(_hostName.Button));
+        AddHostSetting(host, "MAX PLAYERS", 86f, () => $"{_hostMaxPlayers}", direction =>
             _hostMaxPlayers = Mathf.Clamp(_hostMaxPlayers + direction, 2, Mathf.Max(2, _actions.GetTooManyPlayerLimit())));
-        AddHostSetting(host, "LOBBY TYPE", 2f, () => Visibilities[_hostVisibility].Label,
+        AddHostSetting(host, "LOBBY TYPE", 22f, () => Visibilities[_hostVisibility].Label,
             direction => _hostVisibility = Wrap(_hostVisibility + direction, Visibilities.Length));
-        AddHostSetting(host, "PASSWORD", -62f, () => MenuSetting.OnOff(_hostUsesPassword), _ => _hostUsesPassword = !_hostUsesPassword);
-        _hostPassword = new MenuField(host, "Host Password", "PASSWORD", "Password", new Vector2(300f, -126f), new Vector2(560f, 56f), 220f, password: true);
-        Add(_hostPassword.Button);
+        AddHostSetting(host, "PASSWORD", -42f, () => MenuSetting.OnOff(_hostUsesPassword), _ => _hostUsesPassword = !_hostUsesPassword);
+        _hostPassword = new MenuField(host, "Host Password", "PASSWORD", "Password", new Vector2(HostColumnX, -106f), new Vector2(HostWidth, 56f),
+            220f, password: true);
+        _hostColumn.Add(Add(_hostPassword.Button));
         _hostStatus = MenuKit.Text(host, "Status", "", MenuStyle.SmallSize, MenuStyle.TextDim, TextAlignmentOptions.TopLeft,
-            new Vector2(300f, -250f), new Vector2(560f, 110f), wrap: true);
-        _host = Add(MenuKit.Button(host, "Host", "HOST LOBBY", new Vector2(300f, -400f), new Vector2(560f, 62f), HostLobby));
+            new Vector2(HostColumnX, -215f), new Vector2(HostWidth, 100f), wrap: true);
+        _host = Add(MenuKit.Button(host, "Host", "HOST LOBBY", new Vector2(HostColumnX, -400f), new Vector2(HostWidth, 62f), HostLobby));
+        _hostColumn.Add(_host);
 
-        SetOrders(_list.Rows, _filterOrder, _hostList.Rows);
+        SetOrders(_rail, _browserColumn, _details, _filterOrder, _hostList.Rows, _hostColumn);
 
         // Asked for a password before joining.
         _popup = MenuKit.Rect(Root, "Password", Vector2.zero, canvas.sizeDelta);
@@ -305,9 +346,9 @@ internal sealed class MultiplayerScreen : MenuScreen
         var box = MenuKit.Panel(_popup, "Box", new Vector2(ContentX, 0f), new Vector2(720f, 380f)).rectTransform;
         _popupTitle = MenuKit.Text(box, "Title", "PASSWORD", MenuStyle.HeadingSize, MenuStyle.Text, TextAlignmentOptions.Left,
             new Vector2(0f, 130f), new Vector2(640f, 64f), heading: true);
-        _popupPassword = new MenuField(box, "Join Password", "PASSWORD", "Server password", new Vector2(0f, 40f), new Vector2(640f, 56f), 220f, password: true);
-        Add(_popupPassword.Button);
-        _popupButtons.Add(_popupPassword.Button);
+        _popupPassword = new MenuField(box, "Join Password", "PASSWORD", "Server password", new Vector2(0f, 40f), new Vector2(640f, 56f), 220f,
+            password: true);
+        _popupButtons.Add(Add(_popupPassword.Button));
         // Enter joins, as typing the password is the last thing to do.
         _popupPassword.Input.onEndEdit.AddListener(_ =>
         {
@@ -329,12 +370,13 @@ internal sealed class MultiplayerScreen : MenuScreen
         _promptDevice = (MenuDevice)(-1);
         ClosePopup();
         _picked = null;
+        _lastListFocus = null;
         ShowView(View.Browser);
         _status.text = "Looking for lobbies.";
         _actions.TryRefreshMultiplayerLobbies();
-        ReadLobbies();
+        ReadLobbies(resort: true);
         _nextRefresh = Time.unscaledTime + RefreshSeconds;
-        Focus(FirstFocus(), sound: false);
+        Focus(_viewButtons[View.Browser], sound: false);
     }
 
     protected override void OnHidden()
@@ -353,15 +395,10 @@ internal sealed class MultiplayerScreen : MenuScreen
         if (Time.unscaledTime < _nextRefresh) return;
 
         _nextRefresh = Time.unscaledTime + RefreshSeconds;
-        ReadLobbies();
+        ReadLobbies(resort: false);
     }
 
-    protected override MenuButton? FirstFocus() => _view switch
-    {
-        View.Browser => _list.Count > 0 ? _list.Rows[0] : _search.Button,
-        View.Filters => _filterOrder[0],
-        _ => _hostList.Count > 0 ? _hostList.Rows[0] : _hostName.Button
-    };
+    protected override MenuButton? FirstFocus() => _viewButtons[_view];
 
     protected override bool OnBack()
     {
@@ -372,7 +409,13 @@ internal sealed class MultiplayerScreen : MenuScreen
         }
 
         var focused = Focused;
-        if (focused != null && focused.transform.IsChildOf(_views[_view]))
+        if (focused == _join && CanFocus(_lastListFocus))
+        {
+            Focus(_lastListFocus, sound: false);
+            return true;
+        }
+
+        if (focused != null && !_rail.Contains(focused))
         {
             Focus(_viewButtons[_view], sound: false);
             return true;
@@ -398,21 +441,69 @@ internal sealed class MultiplayerScreen : MenuScreen
         MenuSounds.Move();
     }
 
-    protected override bool OnOrderEnd(List<MenuButton> order, int step)
+    protected override bool OnOrderStep(List<MenuButton> order, MenuButton focused, int step)
     {
-        if (order == _filterOrder) return true;
-
-        var list = order == _hostList.Rows ? _hostList : _list;
-        if (!list.Scroll(step, sound: true)) return false;
+        var list = order == _browserColumn ? _list : order == _hostList.Rows ? _hostList : null;
+        if (list == null || !list.StepPast(focused, step)) return false;
 
         RefreshPositions();
         if (list == _list) ShowLobby(EntryLobby(_list.EntryOf(Focused)));
         return true;
     }
 
+    // The columns end there; across is Left and Right.
+    protected override bool OnOrderEnd(List<MenuButton> order, int step) => true;
+
+    // From the sections into the section shown and back; from a list to what it leads to (Join, the lobby's settings)
+    // and back to the list.
+    protected override bool OnSideways(MenuButton focused, int direction)
+    {
+        if (_popup.gameObject.activeSelf) return false;
+
+        if (_rail.Contains(focused))
+        {
+            if (direction > 0) EnterView();
+            return true;
+        }
+
+        if (_browserColumn.Contains(focused))
+        {
+            var entry = _list.EntryOf(focused);
+            if (direction < 0) Focus(_viewButtons[_view], sound: true);
+            else if (entry >= 0) PickLobby(entry, joinIfPicked: false);
+            else FocusFirst(_join);
+            return true;
+        }
+
+        if (focused == _join)
+        {
+            if (direction < 0) FocusFirst(_lastListFocus, _list.Rows[0], _search.Button);
+            return true;
+        }
+
+        if (_hostList.Rows.Contains(focused))
+        {
+            if (direction < 0) Focus(_viewButtons[_view], sound: true);
+            else PickHostMission(_hostList.EntryOf(focused));
+            return true;
+        }
+
+        if (_hostColumn.Contains(focused))
+        {
+            if (direction < 0) FocusFirst(_lastHostListFocus, _hostList.Rows[0]);
+            return true;
+        }
+
+        return false;
+    }
+
     protected override void OnFocused(MenuButton? button)
     {
-        if (_view != View.Browser) return;
+        if (button == null) return;
+
+        if (_browserColumn.Contains(button)) _lastListFocus = button;
+        if (_hostList.Rows.Contains(button)) _lastHostListFocus = button;
+        if (_view != View.Browser || !_browserColumn.Contains(button) && button != _join) return;
 
         var entry = _list.EntryOf(button);
         ShowLobby(entry >= 0 ? _shown[entry] : Picked());
@@ -421,6 +512,8 @@ internal sealed class MultiplayerScreen : MenuScreen
     private static string Prompt(MenuCommand command) =>
         $"<color=#{MenuStyle.Hex(MenuStyle.Accent)}>{MenuInput.GetPrompt(command).ToUpperInvariant()}</color>";
 
+    private static Vector2 ListCenter(float top, int rows) => new(ListX, top - (RowHeight + (rows - 1) * RowStep) / 2f);
+
     private RectTransform AddView(RectTransform content, View view)
     {
         var rect = MenuKit.Rect(content, $"{view} View", Vector2.zero, ContentSize);
@@ -428,13 +521,15 @@ internal sealed class MultiplayerScreen : MenuScreen
         return rect;
     }
 
-    private void AddViewButton(RectTransform rail, View view, string label, ref float y)
+    private void AddViewButton(RectTransform rail, View view, ref float y)
     {
-        _viewButtons[view] = Add(MenuKit.Button(rail, label, label, new Vector2(0f, y), new Vector2(RailButtonWidth, RailButtonHeight), () =>
+        var button = Add(MenuKit.Button(rail, _titles[view], _titles[view], new Vector2(0f, y), new Vector2(RailButtonWidth, RailButtonHeight), () =>
         {
             ShowView(view);
-            Focus(FirstFocus(), sound: false);
+            EnterView();
         }, MenuButton.Look.Secondary));
+        _viewButtons[view] = button;
+        _rail.Add(button);
         y -= RailStep;
     }
 
@@ -443,6 +538,7 @@ internal sealed class MultiplayerScreen : MenuScreen
         _view = view;
         foreach (var pair in _views) pair.Value.gameObject.SetActive(pair.Key == view);
         foreach (var pair in _viewButtons) pair.Value.Highlight = pair.Key == view;
+        _title.text = _titles[view];
         if (view == View.Host)
         {
             if (!_hostMissionsLoaded) LoadHostMissions();
@@ -450,16 +546,34 @@ internal sealed class MultiplayerScreen : MenuScreen
         }
 
         RefreshFilters();
+        RefreshCount();
+    }
+
+    // Into the section shown: where the focus was in it, else its first row.
+    private void EnterView()
+    {
+        switch (_view)
+        {
+            case View.Browser:
+                FocusFirst(_lastListFocus, _list.Rows[0], _sort.Button);
+                break;
+            case View.Filters:
+                FocusFirst(_filterOrder[0]);
+                break;
+            default:
+                FocusFirst(_lastHostListFocus, _hostList.Rows[0], _hostName.Button);
+                break;
+        }
     }
 
     // The game's own browser, as it has it now.
-    private void ReadLobbies()
+    private void ReadLobbies(bool resort)
     {
         _lobbies.Clear();
         if (!_actions.TryGetActiveLobbyList(out var lobbyList) || lobbyList == null)
         {
             _status.text = "Waiting for the game's lobby list.";
-            ApplyFilters(fromTop: false);
+            ApplyFilters(resort);
             return;
         }
 
@@ -477,35 +591,55 @@ internal sealed class MultiplayerScreen : MenuScreen
             }
         }
 
-        ApplyFilters(fromTop: false);
+        ApplyFilters(resort);
     }
 
     private static bool IsShown(LobbyListItem item) =>
         ShownField?.GetValue(item) is bool shown ? shown : item.gameObject.activeInHierarchy;
 
-    private void ApplyFilters(bool fromTop)
+    // Sorted again from the top (resort), or kept in the order shown with new lobbies after and gone ones dropped.
+    private void ApplyFilters(bool resort)
     {
-        _shown.Clear();
-        foreach (var lobby in _lobbies)
+        var passing = _lobbies.FindAll(Matches);
+        if (resort)
         {
-            if (Matches(lobby)) _shown.Add(lobby);
+            passing.Sort(Compare);
+            _shown = passing;
+            _list.SetCount(_shown.Count);
+            _list.Reset();
+        }
+        else
+        {
+            var kept = new List<Lobby>(passing.Count);
+            foreach (var shown in _shown)
+            {
+                var now = passing.Find(lobby => ReferenceEquals(lobby.Instance, shown.Instance));
+                if (now != null) kept.Add(now);
+            }
+
+            foreach (var lobby in passing)
+            {
+                if (!kept.Exists(candidate => ReferenceEquals(candidate.Instance, lobby.Instance))) kept.Add(lobby);
+            }
+
+            _shown = kept;
+            _list.SetCount(_shown.Count);
         }
 
-        _shown.Sort(Compare);
         _list.Selected = _shown.FindIndex(lobby => ReferenceEquals(lobby.Instance, _picked));
-        _list.SetCount(_shown.Count);
-        if (fromTop) _list.Reset();
+        _list.Refresh();
         RefreshPositions();
         RefreshFilters();
+        RefreshCount();
         if (_lobbies.Count > 0)
         {
             _status.text = _shown.Count == 0
                 ? $"None of the {_lobbies.Count} lobbies found pass the filters."
-                : "Select a lobby to see it, and again to join. A column's heading sorts by it.";
+                : "Select a lobby to pick it, Select again to join.";
         }
 
         var focusedEntry = _list.EntryOf(Focused);
-        ShowLobby(focusedEntry >= 0 ? _shown[focusedEntry] : Picked());
+        if (Focused == null || _browserColumn.Contains(Focused) || Focused == _join) ShowLobby(focusedEntry >= 0 ? _shown[focusedEntry] : Picked());
     }
 
     private bool Matches(Lobby lobby)
@@ -545,40 +679,16 @@ internal sealed class MultiplayerScreen : MenuScreen
 
     private int Compare(Lobby left, Lobby right)
     {
-        var comparison = _sort switch
+        var (sort, ascending, _) = Sorts[_sortIndex];
+        var comparison = sort switch
         {
             Sort.Mission => string.Compare(left.Mission, right.Mission, StringComparison.OrdinalIgnoreCase),
             Sort.Players => left.Players.CompareTo(right.Players),
             Sort.Ping => left.Ping.GetValueOrDefault(int.MaxValue).CompareTo(right.Ping.GetValueOrDefault(int.MaxValue)),
             _ => string.Compare(left.Name, right.Name, StringComparison.OrdinalIgnoreCase)
         };
-        if (!_ascending) comparison = -comparison;
+        if (!ascending) comparison = -comparison;
         return comparison != 0 ? comparison : string.Compare(left.Name, right.Name, StringComparison.OrdinalIgnoreCase);
-    }
-
-    // A second click on the same heading turns the order round; busiest and nearest first, names A to Z.
-    private void SetSort(Sort sort, bool keepOrder = false)
-    {
-        if (!keepOrder) _ascending = sort == _sort ? !_ascending : sort is Sort.Lobby or Sort.Mission or Sort.Ping;
-        _sort = sort;
-        ApplyFilters(fromTop: true);
-    }
-
-    private static string SortLabel(Sort sort) => sort switch
-    {
-        Sort.Mission => "MISSION",
-        Sort.Players => "PLAYERS",
-        Sort.Ping => "PING",
-        _ => "LOBBY"
-    };
-
-    private void AddHeading(RectTransform parent, Sort sort, string label, float rowX)
-    {
-        var column = Columns[(int)sort];
-        var button = Add(MenuKit.Button(parent, $"Sort {label}", label, new Vector2(rowX + column.X, 344f), new Vector2(column.Width, 40f),
-            () => SetSort(sort), MenuButton.Look.Cell, MenuStyle.SmallSize));
-        if (button.Label != null) button.Label.alignment = column.Alignment;
-        _headings.Add((sort, label, button));
     }
 
     private void FillLobby(int entry, TextMeshProUGUI[] cells)
@@ -594,12 +704,13 @@ internal sealed class MultiplayerScreen : MenuScreen
         cells[3].text = lobby.PingText;
     }
 
-    private void PickLobby(int entry)
+    // Select on the picked lobby again joins it; Right only ever picks.
+    private void PickLobby(int entry, bool joinIfPicked)
     {
         if (entry < 0 || entry >= _shown.Count) return;
 
         var lobby = _shown[entry];
-        if (ReferenceEquals(lobby.Instance, _picked) && _join.interactable)
+        if (joinIfPicked && ReferenceEquals(lobby.Instance, _picked) && _join.interactable)
         {
             Join();
             return;
@@ -609,7 +720,7 @@ internal sealed class MultiplayerScreen : MenuScreen
         _list.Selected = entry;
         _list.Refresh();
         ShowLobby(lobby);
-        Focus(_join, sound: false);
+        FocusFirst(_join);
     }
 
     private Lobby? Picked() => _picked == null ? null : _shown.Find(lobby => ReferenceEquals(lobby.Instance, _picked));
@@ -620,14 +731,14 @@ internal sealed class MultiplayerScreen : MenuScreen
     {
         if (lobby == null)
         {
-            _title.text = _shown.Count > 0 ? "PICK A LOBBY" : "";
+            _lobbyName.text = _shown.Count > 0 ? "PICK A LOBBY" : "";
             _mission.text = "";
             _facts.text = "";
             _description.text = "";
         }
         else
         {
-            _title.text = lobby.Name;
+            _lobbyName.text = lobby.Name;
             _mission.text = lobby.Mission;
             var flags = new List<string> { lobby.TypeText, lobby.Dedicated ? "DEDICATED" : "PLAYER HOSTED" };
             if (lobby.Password) flags.Add("PASSWORD");
@@ -639,7 +750,8 @@ internal sealed class MultiplayerScreen : MenuScreen
 
         var picked = Picked();
         _join.interactable = picked != null && !picked.Full;
-        _join.SetLabel(picked != null && lobby != null && !ReferenceEquals(lobby.Instance, picked.Instance) ? "JOIN PICKED LOBBY" : "JOIN");
+        var label = picked == null ? "JOIN" : $"JOIN {picked.Name.ToUpperInvariant()}";
+        if (_join.Label != null && _join.Label.text != label) _join.SetLabel(label);
     }
 
     private void Join()
@@ -677,7 +789,8 @@ internal sealed class MultiplayerScreen : MenuScreen
 
         MenuField.StopTyping();
         _popup.gameObject.SetActive(false);
-        SetModal(null, _join.interactable ? _join : null);
+        SetModal(null, null);
+        FocusFirst(_join, _lastListFocus);
     }
 
     private void JoinWithPassword()
@@ -704,34 +817,34 @@ internal sealed class MultiplayerScreen : MenuScreen
             : $"Couldn't join {lobby.Name}.";
     }
 
+    // Asks the game's browser again, and sorts what it then has.
     private void Refresh()
     {
         _status.text = "Looking for lobbies.";
         _actions.TryRefreshMultiplayerLobbies();
-        _nextRefresh = 0f;
+        ReadLobbies(resort: true);
+        _nextRefresh = Time.unscaledTime + RefreshSeconds;
     }
 
     private void RefreshPositions()
     {
         _position.text = _shown.Count == 0 ? "" : _list.Position;
         _hostPosition.text = _hostList.Position;
-        foreach (var (sort, label, button) in _headings)
-        {
-            var text = sort == _sort ? $"<color=#{MenuStyle.Hex(MenuStyle.Accent)}>{label} {(_ascending ? "^" : "v")}</color>" : label;
-            button.SetLabel(text);
-        }
+    }
+
+    private void RefreshCount()
+    {
+        _count.text = _view == View.Host || _lobbies.Count == 0 ? "" : $"{_shown.Count} OF {_lobbies.Count} LOBBIES";
     }
 
     private void AddToggle(RectTransform parent, string label, Func<bool> get, Action<bool> set) =>
         AddFilter(parent, label, () => MenuSetting.OnOff(get()), _ => set(!get()));
 
-    private void AddChoice(RectTransform parent, string label, Func<string> read, Action<int> adjust) => AddFilter(parent, label, read, adjust);
-
     private void AddFilter(RectTransform parent, string label, Func<string> read, Action<int> adjust)
     {
         var index = _filters.Count;
         var position = new Vector2(FilterColumnX[index / FiltersPerColumn], FilterFirstY - index % FiltersPerColumn * FilterRowStep);
-        var setting = new MenuSetting(parent, label, position, FilterRowSize, 220f, read, adjust, null, () => ApplyFilters(fromTop: true));
+        var setting = new MenuSetting(parent, label, position, FilterRowSize, 220f, read, adjust, null, () => ApplyFilters(resort: true));
         _filters.Add(setting);
         _filterOrder.Add(Add(setting.Button));
     }
@@ -739,14 +852,14 @@ internal sealed class MultiplayerScreen : MenuScreen
     private void RefreshFilters()
     {
         foreach (var filter in _filters) filter.Refresh();
-        _filtersSummary.text = _lobbies.Count == 0 ? "No lobbies found yet." : $"{_shown.Count} OF {_lobbies.Count} LOBBIES SHOWN";
+        _filtersSummary.text = _lobbies.Count == 0 ? "No lobbies found yet." : $"{_shown.Count} of the {_lobbies.Count} lobbies found pass these.";
     }
 
     private void AddHostSetting(RectTransform parent, string label, float y, Func<string> read, Action<int> adjust)
     {
-        var setting = new MenuSetting(parent, label, new Vector2(300f, y), new Vector2(560f, 56f), 200f, read, adjust, null, RefreshHost);
+        var setting = new MenuSetting(parent, label, new Vector2(HostColumnX, y), new Vector2(HostWidth, 56f), 200f, read, adjust, null, RefreshHost);
         _hostSettings.Add(setting);
-        Add(setting.Button);
+        _hostColumn.Add(Add(setting.Button));
     }
 
     private void LoadHostMissions()
@@ -769,7 +882,7 @@ internal sealed class MultiplayerScreen : MenuScreen
         }
 
         _hostList.SetCount(_hostMissions.Count);
-        if (_hostMissions.Count > 0) PickHostMission(0, focusName: false);
+        if (_hostMissions.Count > 0) PickHostMission(0, focusHost: false);
     }
 
     private void FillHostMission(int entry, TextMeshProUGUI[] cells)
@@ -778,9 +891,9 @@ internal sealed class MultiplayerScreen : MenuScreen
         cells[0].color = entry == _hostPicked ? MenuStyle.Accent : MenuStyle.Text;
     }
 
-    private void PickHostMission(int entry) => PickHostMission(entry, focusName: true);
+    private void PickHostMission(int entry) => PickHostMission(entry, focusHost: true);
 
-    private void PickHostMission(int entry, bool focusName)
+    private void PickHostMission(int entry, bool focusHost)
     {
         if (entry < 0 || entry >= _hostMissions.Count) return;
 
@@ -794,7 +907,7 @@ internal sealed class MultiplayerScreen : MenuScreen
         // A name typed in is kept; the one made from the last mission follows the new one.
         if (string.IsNullOrWhiteSpace(_hostName.Value) || _hostName.Value == previous) _hostName.Value = DefaultLobbyName(mission.Key);
         RefreshHost();
-        if (focusName) Focus(_host, sound: false);
+        if (focusHost) FocusFirst(_host);
     }
 
     private static string DefaultLobbyName(MissionKey key) => $"{key.Name} [Hosted by {PlayerSettings.playerName_Unsanitized}]";

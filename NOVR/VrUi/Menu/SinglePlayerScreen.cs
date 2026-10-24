@@ -11,7 +11,8 @@ namespace NOVR.VrUi.Menu;
 
 // The game's single player missions, in its menu style: the mission groups down the left-hand panel, the missions of the
 // chosen one in a list, and the one focused or picked described on the right. Select on a mission picks it and goes to
-// Start; the tab bindings change group, and Left and Right on Tags filter by time of day or mission type. The missions
+// Start; the tab bindings change group, and Left and Right on Tags filter by time of day or mission type. Up and Down run
+// down a column; Right goes from the groups to the list and on to Start, Left back the same way, as does Back. The missions
 // are loaded and started as the game's own picker does (NativeSinglePlayerMissionPanel did the same), which is kept in
 // step behind this, so Customize opens the game's own screen for the picked mission.
 internal sealed class SinglePlayerScreen : MenuScreen
@@ -74,6 +75,10 @@ internal sealed class SinglePlayerScreen : MenuScreen
     private readonly TextMeshProUGUI _prompts;
     private readonly MenuButton _customize;
     private readonly MenuButton _start;
+    private readonly List<MenuButton> _rail = new();
+    private readonly List<MenuButton> _column = new();
+    private readonly List<MenuButton> _details = new();
+    private MenuButton? _lastListFocus;
     private Group _group = Group.All;
     private int _tag;
     private MissionKey? _picked;
@@ -94,14 +99,15 @@ internal sealed class SinglePlayerScreen : MenuScreen
         {
             _groupButtons[group] = Add(MenuKit.Button(rail, label, label, new Vector2(0f, y), new Vector2(RailButtonWidth, RailButtonHeight),
                 () => SetGroup(group), MenuButton.Look.Secondary));
+            _rail.Add(_groupButtons[group]);
             y -= RailStep;
         }
 
         y -= 18f;
-        Add(MenuKit.Button(rail, "User Folder", "OPEN USER FOLDER", new Vector2(0f, y), new Vector2(RailButtonWidth, RailButtonHeight),
-            () => _actions.TryInvokeCurrentMenuButton("Open User Folder", "Open User Folder", "OPEN USER FOLDER"), MenuButton.Look.Secondary));
+        _rail.Add(Add(MenuKit.Button(rail, "User Folder", "OPEN USER FOLDER", new Vector2(0f, y), new Vector2(RailButtonWidth, RailButtonHeight),
+            () => _actions.TryInvokeCurrentMenuButton("Open User Folder", "Open User Folder", "OPEN USER FOLDER"), MenuButton.Look.Secondary)));
         y -= RailStep + 18f;
-        Add(MenuKit.Button(rail, "Back", "BACK", new Vector2(0f, y), new Vector2(RailButtonWidth, 56f), Leave));
+        _rail.Add(Add(MenuKit.Button(rail, "Back", "BACK", new Vector2(0f, y), new Vector2(RailButtonWidth, 56f), Leave)));
 
         _prompts = MenuKit.Text(rail, "Prompts", "", MenuStyle.SmallSize, MenuStyle.TextDim, TextAlignmentOptions.Left,
             new Vector2(0f, -top + 40f), new Vector2(RailButtonWidth, 34f));
@@ -109,14 +115,13 @@ internal sealed class SinglePlayerScreen : MenuScreen
         var content = MenuKit.Panel(Root, "Missions", new Vector2(ContentX, 0f), ContentSize).rectTransform;
         _tags = new MenuSetting(content, "TAGS", new Vector2(ListX, 400f), new Vector2(ListWidth, 56f), 200f,
             () => Tags[_tag].Label, direction => SetTag((_tag + direction + Tags.Length) % Tags.Length), null, () => _tags?.Refresh());
-        Add(_tags.Button);
+        _column.Add(Add(_tags.Button));
 
         var columns = new[] { new MenuList.Column(0f, ListWidth - 60f) };
         _list = new MenuList(content, "Mission List", new Vector2(ListX, 360f - (RowHeight + (Rows - 1) * RowStep) / 2f), ListWidth, Rows,
             RowHeight, RowStep, columns, FillRow);
         _list.Activated += Pick;
-        foreach (var row in _list.Rows) Add(row);
-        SetOrders(_list.Rows);
+        foreach (var row in _list.Rows) _column.Add(Add(row));
 
         _position = MenuKit.Text(content, "Position", "", MenuStyle.SmallSize, MenuStyle.TextDim, TextAlignmentOptions.Left,
             new Vector2(ListX, -345f), new Vector2(ListWidth, 32f));
@@ -132,6 +137,9 @@ internal sealed class SinglePlayerScreen : MenuScreen
         _customize = Add(MenuKit.Button(content, "Customize", "CUSTOMIZE", new Vector2(DetailsX, -330f), new Vector2(DetailsWidth, 56f),
             Customize, MenuButton.Look.Secondary));
         _start = Add(MenuKit.Button(content, "Start", "START MISSION", new Vector2(DetailsX, -400f), new Vector2(DetailsWidth, 62f), Start));
+        _details.Add(_customize);
+        _details.Add(_start);
+        SetOrders(_rail, _column, _details);
         ShowDetails(null);
     }
 
@@ -168,7 +176,13 @@ internal sealed class SinglePlayerScreen : MenuScreen
     protected override bool OnBack()
     {
         var focused = Focused;
-        if (focused != null && !_groupButtons.ContainsValue(focused) && focused.transform.IsChildOf(_list.Rect.parent))
+        if (focused != null && _details.Contains(focused) && CanFocus(_lastListFocus))
+        {
+            Focus(_lastListFocus, sound: false);
+            return true;
+        }
+
+        if (focused != null && !_rail.Contains(focused))
         {
             Focus(_groupButtons[_group], sound: false);
             return true;
@@ -185,18 +199,48 @@ internal sealed class SinglePlayerScreen : MenuScreen
         MenuSounds.Move();
     }
 
-    protected override bool OnOrderEnd(List<MenuButton> order, int step)
+    protected override bool OnOrderStep(List<MenuButton> order, MenuButton focused, int step)
     {
-        if (!_list.Scroll(step, sound: true)) return false;
+        if (order != _column || !_list.StepPast(focused, step)) return false;
 
         RefreshPosition();
         ShowDetails(EntryKey(_list.EntryOf(Focused)));
         return true;
     }
 
+    // The columns end there; across is Left and Right.
+    protected override bool OnOrderEnd(List<MenuButton> order, int step) => true;
+
+    protected override bool OnSideways(MenuButton focused, int direction)
+    {
+        if (_rail.Contains(focused))
+        {
+            if (direction > 0) FocusFirst(_lastListFocus, _list.Rows[0], _tags.Button);
+            return true;
+        }
+
+        if (_column.Contains(focused))
+        {
+            var entry = _list.EntryOf(focused);
+            if (direction < 0) Focus(_groupButtons[_group], sound: true);
+            else if (entry >= 0) Pick(entry);
+            else FocusFirst(_start, _customize);
+            return true;
+        }
+
+        if (_details.Contains(focused))
+        {
+            if (direction < 0) FocusFirst(_lastListFocus, _list.Rows[0], _tags.Button);
+            return true;
+        }
+
+        return false;
+    }
+
     // The focused mission is described while the focus is on the list; the picked one otherwise.
     protected override void OnFocused(MenuButton? button)
     {
+        if (button != null && _column.Contains(button)) _lastListFocus = button;
         var entry = _list.EntryOf(button);
         ShowDetails(entry >= 0 ? _shown[entry].Key : _picked);
     }
@@ -287,7 +331,7 @@ internal sealed class SinglePlayerScreen : MenuScreen
         _list.Selected = entry;
         _list.Refresh();
         ShowDetails(_picked);
-        Focus(_start, sound: false);
+        FocusFirst(_start);
     }
 
     private void ShowDetails(MissionKey? key)
