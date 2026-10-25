@@ -21,7 +21,7 @@ namespace NOVR;
 [BepInPlugin(
     "deltawing.novr",
     "NOVR",
-    "0.4.32")]
+    "0.4.33")]
 public class NOVRPlugin : BaseUnityPlugin
 {
     
@@ -40,6 +40,7 @@ public class NOVRPlugin : BaseUnityPlugin
         new ModConfiguration(Config);
         Harmony.CreateAndPatchAll(Assembly.GetExecutingAssembly());
         GameErrorPopupPatch.Apply();
+        JoinProgressPatch.Apply();
         GazeDesignatePatch.Apply();
         MinimapZoomPatch.Apply();
         RadarWarningVrPatch.Apply();
