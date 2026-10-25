@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using Cysharp.Threading.Tasks;
+using NOVR.VrUi.HarmonyPatches;
 using NOVR.VrUi.Native;
 using NuclearOption.Networking;
 using NuclearOption.Networking.Lobbies;
@@ -153,6 +154,10 @@ internal sealed class MultiplayerScreen : RailScreen
     private bool _hostMissionsLoaded;
     private bool _hosting;
     private float _nextRefresh;
+    private int _joinSeen = -1;
+    private string _joiningName = "";
+    private bool _joinPopupOpen;
+    private bool _closingJoinPopup;
 
     public MultiplayerScreen(RectTransform canvas, NativeGameActionAdapter actions) : base(canvas, "NOVR Multiplayer", "MULTIPLAYER")
     {
@@ -216,11 +221,26 @@ internal sealed class MultiplayerScreen : RailScreen
         _actions.TryRefreshMultiplayerLobbies();
         ReadLobbies(resort: true);
         _nextRefresh = Time.unscaledTime + RefreshSeconds;
+        _joinSeen = -1;
+    }
+
+    protected override void OnHidden()
+    {
+        // Hidden is not the player closing the join box, so joining goes on.
+        _closingJoinPopup = true;
+        base.OnHidden();
+        _closingJoinPopup = false;
     }
 
     protected override void OnTick()
     {
         base.OnTick();
+        if (_joinSeen != JoinProgressPatch.Version)
+        {
+            _joinSeen = JoinProgressPatch.Version;
+            ShowJoinProgress();
+        }
+
         if (Time.unscaledTime < _nextRefresh) return;
 
         _nextRefresh = Time.unscaledTime + RefreshSeconds;
@@ -468,10 +488,53 @@ internal sealed class MultiplayerScreen : RailScreen
             }
         }
 
+        _joiningName = lobby.Name;
         SetStatus(_actions.TryJoinLobby(lobby.Instance, password, promptIfPasswordNeeded: false)
             ? $"Joining {lobby.Name}."
             : $"Couldn't join {lobby.Name}.");
         return true;
+    }
+
+    // What the game's join overlay says, which the headset doesn't show: a box while joining, with Cancel, and why it
+    // failed if it did. It closes when the game's overlay does (the map is loading); closing it is the overlay's
+    // Cancel, or its Close once joining has failed.
+    private void ShowJoinProgress()
+    {
+        if (!JoinProgressPatch.Showing)
+        {
+            if (!_joinPopupOpen) return;
+
+            _closingJoinPopup = true;
+            ClosePopup();
+            _closingJoinPopup = false;
+            return;
+        }
+
+        var joining = JoinProgressPatch.Joining;
+        var body = JoinProgressPatch.Body;
+        PopupField.Submitted = null;
+        OpenPopup(joining ? "JOINING SERVER" : "COULDN'T JOIN", _joiningName, body, picture: false, fieldLabel: null);
+        SetPopupCloseLabel(joining ? "CANCEL" : "CLOSE");
+        _joinPopupOpen = true;
+        OnPopupClosed(JoinPopupClosed);
+        var name = _joiningName.Length > 0 ? _joiningName : "the server";
+        SetStatus(joining ? $"Joining {name}: {body}" : $"Couldn't join {name}: {body}");
+    }
+
+    private void JoinPopupClosed()
+    {
+        _joinPopupOpen = false;
+        if (_closingJoinPopup || !JoinProgressPatch.Showing) return;
+
+        if (JoinProgressPatch.Joining)
+        {
+            JoinProgressPatch.Cancel();
+            SetStatus($"Stopped joining {(_joiningName.Length > 0 ? _joiningName : "the server")}.");
+        }
+        else
+        {
+            JoinProgressPatch.Dismiss();
+        }
     }
 
     // Asks the game's browser again, and sorts what it then has.
@@ -546,6 +609,7 @@ internal sealed class MultiplayerScreen : RailScreen
 
         var entry = _hostMissions[_hostPicked];
         var name = string.IsNullOrWhiteSpace(_hostName.Value) ? DefaultLobbyName(entry.Key) : _hostName.Value.Trim();
+        _joiningName = name;
         HostAsync(entry.Key, name, _hostMaxPlayers, Visibilities[_hostVisibility].Visibility, password).Forget();
     }
 

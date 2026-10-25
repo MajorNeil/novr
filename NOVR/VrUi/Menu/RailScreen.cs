@@ -378,6 +378,7 @@ internal abstract class RailScreen : MenuScreen
         params (string Label, Func<bool> Action)[] actions)
     {
         _popupClosed = null;
+        _popupCancel.SetLabel("CANCEL");
         _choices = Array.Empty<string>();
         _chosen = null;
         _choiceList.Rect.gameObject.SetActive(false);
@@ -430,6 +431,7 @@ internal abstract class RailScreen : MenuScreen
     protected void OpenChoice(string title, IReadOnlyList<string> choices, int current, Action<int> chosen)
     {
         _popupClosed = null;
+        _popupCancel.SetLabel("CANCEL");
         _choices = choices;
         _chosen = chosen;
         _popupImage.gameObject.SetActive(false);
@@ -459,6 +461,9 @@ internal abstract class RailScreen : MenuScreen
     protected Image PopupPicture => _popupImage;
 
     protected void SetPopupStatus(string text) => _popupStatus.text = text;
+
+    // The last button, which closes the box: CANCEL unless set here after opening it.
+    protected void SetPopupCloseLabel(string label) => _popupCancel.SetLabel(label);
 
     // Run when the box closes, however it closes.
     protected void OnPopupClosed(Action closed) => _popupClosed = closed;
