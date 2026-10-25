@@ -25,10 +25,13 @@ public sealed class NativePanelTransition : MonoBehaviour
         Initialize();
     }
 
+    // Once: taken again on a later call, the shown position would be wherever a hide left it, and creep right each time.
     private void Initialize()
     {
-        _rectTransform ??= (RectTransform)transform;
-        _canvasGroup ??= gameObject.GetComponent<CanvasGroup>() ?? gameObject.AddComponent<CanvasGroup>();
+        if (_rectTransform != null) return;
+
+        _rectTransform = (RectTransform)transform;
+        _canvasGroup = gameObject.GetComponent<CanvasGroup>() ?? gameObject.AddComponent<CanvasGroup>();
         _shownPosition = _rectTransform.anchoredPosition;
         _hiddenPosition = _shownPosition + new Vector2(HiddenOffsetX, 0f);
     }

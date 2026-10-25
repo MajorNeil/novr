@@ -9,8 +9,9 @@ public class NOVRTargetDesignatorBehavior : UIRenderedCanvasBehavior
     private void Update()
     {
         var uiCam = APIBus.CockpitHudReference;
-        
-        transform.rotation = Quaternion.SlerpUnclamped(Quaternion.identity, uiCam.transform.rotation, 1.1f);
+
+        // Exactly where the head points: it used to be pushed 10% further off boresight than the head turned.
+        transform.rotation = uiCam.transform.rotation;
         transform.position = transform.forward * _offset;
     }
 }

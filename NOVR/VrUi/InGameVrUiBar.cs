@@ -6,7 +6,7 @@ using UnityEngine.UI;
 namespace NOVR.VrUi;
 
 // While an in-game menu has the cursor up, a small "VR UI SETTINGS" button sits below the menus; it opens a panel to
-// recenter and to size and place the in-game menus and the flight HUD (InGameUiPlacement). It stays put in front of the
+// recenter, to size and place the in-game menus and the flight HUD, and to zoom the minimap (InGameUiPlacement). It stays put in front of the
 // player rather than following the head, below where the menus are, so it doesn't cover them until it's opened.
 // NOVR's own main menu has these in its VR UI settings instead.
 public class InGameVrUiBar : NOVRBehaviour
@@ -35,6 +35,7 @@ public class InGameVrUiBar : NOVRBehaviour
     private Text? _menuScaleText;
     private Text? _menuDistanceText;
     private Text? _hudScaleText;
+    private Text? _minimapZoomText;
     private float _recenterTime = -1f;
     private bool _snapReferenceNextFrame;
 
@@ -96,6 +97,7 @@ public class InGameVrUiBar : NOVRBehaviour
         SetText(_menuScaleText, $"{InGameUiPlacement.Scale:0.00}x");
         SetText(_menuDistanceText, $"{InGameUiPlacement.Distance:0.00} m");
         SetText(_hudScaleText, $"{InGameUiPlacement.HudScale:0.00}x");
+        SetText(_minimapZoomText, $"{InGameUiPlacement.MinimapZoomOut:0.0#}x");
     }
 
     private static void SetText(Text? text, string value)
@@ -152,6 +154,9 @@ public class InGameVrUiBar : NOVRBehaviour
         hudRow.Button("SIZE -", () => InGameUiPlacement.AdjustHudScale(-InGameUiPlacement.ScaleStep));
         _hudScaleText = hudRow.Value();
         hudRow.Button("SIZE +", () => InGameUiPlacement.AdjustHudScale(InGameUiPlacement.ScaleStep));
+        hudRow.Button("MAP IN", () => InGameUiPlacement.ZoomMinimap(outward: false));
+        _minimapZoomText = hudRow.Value();
+        hudRow.Button("MAP OUT", () => InGameUiPlacement.ZoomMinimap(outward: true));
 
         _centerText = CreateButton("VR CENTER", panel, new Vector2(-85f, -rowStep), 150f, AccentButtonColor, OnCenterClicked);
         CreateButton("CLOSE", panel, new Vector2(85f, -rowStep), 150f, ButtonColor, () => SetExpanded(false));

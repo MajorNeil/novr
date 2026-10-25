@@ -1561,26 +1561,26 @@ public class NativeSettingsPanel : MonoBehaviour
         return trimmed.Substring(0, Mathf.Max(0, maxLength - 3)) + "...";
     }
 
-    private void SetUnitSystem(int value)
+    internal static void SetUnitSystem(int value)
     {
         PlayerSettings.unitSystem = (PlayerSettings.UnitSystem)value;
         PlayerPrefs.SetInt("UnitSystem", value);
         ApplyPlayerSettings();
     }
 
-    private void SetCinematicMode(bool value)
+    internal static void SetCinematicMode(bool value)
     {
         PlayerSettings.cinematicMode = value;
         PlayerPrefs.SetInt("CinematicMode", value ? 1 : 0);
     }
 
-    private void SetDebugVisuals(bool value)
+    internal static void SetDebugVisuals(bool value)
     {
         PlayerSettings.debugVis = value;
         PlayerPrefs.SetInt("DebugVis", value ? 1 : 0);
     }
 
-    private static void SetPlayerBool(string key, bool value, Action<bool> assign, bool apply = false)
+    internal static void SetPlayerBool(string key, bool value, Action<bool> assign, bool apply = false)
     {
         assign(value);
         PlayerPrefs.SetInt(key, value ? 1 : 0);
@@ -1590,14 +1590,14 @@ public class NativeSettingsPanel : MonoBehaviour
         }
     }
 
-    private static void SetHudBool(string key, bool value, Action<bool> assign)
+    internal static void SetHudBool(string key, bool value, Action<bool> assign)
     {
         assign(value);
         PlayerPrefs.SetInt(key, value ? 1 : 0);
         ApplyHudSettings();
     }
 
-    private static void SetPlayerFloat(string key, float value, Action<float> assign, bool apply = false)
+    internal static void SetPlayerFloat(string key, float value, Action<float> assign, bool apply = false)
     {
         assign(value);
         PlayerPrefs.SetFloat(key, value);
@@ -1607,14 +1607,14 @@ public class NativeSettingsPanel : MonoBehaviour
         }
     }
 
-    private static void SetHudFloat(string key, float value, Action<float> assign)
+    internal static void SetHudFloat(string key, float value, Action<float> assign)
     {
         assign(value);
         PlayerPrefs.SetFloat(key, value);
         ApplyHudSettings();
     }
 
-    private static void SetPlayerInt(string key, int value, Action<int> assign, bool apply = false)
+    internal static void SetPlayerInt(string key, int value, Action<int> assign, bool apply = false)
     {
         assign(value);
         PlayerPrefs.SetInt(key, value);
@@ -1637,7 +1637,7 @@ public class NativeSettingsPanel : MonoBehaviour
         ApplyHudSettings();
     }
 
-    private static void ReloadPlayerSettings()
+    internal static void ReloadPlayerSettings()
     {
         try
         {
@@ -1649,7 +1649,7 @@ public class NativeSettingsPanel : MonoBehaviour
         }
     }
 
-    private static void ApplyPlayerSettings()
+    internal static void ApplyPlayerSettings()
     {
         try
         {
@@ -1661,7 +1661,7 @@ public class NativeSettingsPanel : MonoBehaviour
         }
     }
 
-    private static void ApplyHudSettings()
+    internal static void ApplyHudSettings()
     {
         try
         {
@@ -1677,7 +1677,7 @@ public class NativeSettingsPanel : MonoBehaviour
         }
     }
 
-    private static float AdjustFloat(float value, float delta, float min, float max, float step)
+    internal static float AdjustFloat(float value, float delta, float min, float max, float step)
     {
         var adjusted = Mathf.Clamp(value + delta, min, max);
         return Mathf.Clamp(Mathf.Round(adjusted / step) * step, min, max);
