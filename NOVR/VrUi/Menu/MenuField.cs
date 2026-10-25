@@ -2,13 +2,16 @@ using System;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
+using Keyboard = UnityEngine.InputSystem.Keyboard;
 
 namespace NOVR.VrUi.Menu;
 
 // Text typed on the keyboard (a search, a lobby name, a password): one row button with its name on the left and the text
 // in a box on the right. Select on the row, or a click on the box, starts typing; Enter, Escape or a click elsewhere stops
 // it, and so do Select and Back on the joystick (MenuScreen). The box is Unity's plain input field, in its built-in font,
-// as the game's font asset can't be typed into without parts of TextMeshPro the game itself never uses.
+// as the game's font asset can't be typed into without parts of TextMeshPro the game itself never uses. Enter is told
+// apart by watching the field (MenuFieldWatcher): the event the field raises for it changed type between Unity versions,
+// so a build referring to it fails on one of them.
 internal sealed class MenuField
 {
     private const float BoxInset = 8f;
@@ -45,11 +48,15 @@ internal sealed class MenuField
         hint.fontStyle = FontStyle.Italic;
         Input.placeholder = hint;
         Input.onValueChanged.AddListener(text => Changed?.Invoke(text));
+        box.gameObject.AddComponent<MenuFieldWatcher>().Field = this;
     }
 
     public MenuButton Button { get; }
     public InputField Input { get; }
     public event Action<string>? Changed;
+
+    // Typing ended with Enter, with what was typed.
+    public Action<string>? Submitted { get; set; }
 
     public string Value
     {
@@ -126,5 +133,27 @@ internal sealed class MenuField
         }
 
         return _font;
+    }
+}
+
+// Tells when typing in a MenuField ends with Enter: the field stops being focused within a frame of Enter going down.
+internal sealed class MenuFieldWatcher : MonoBehaviour
+{
+    private bool _wasFocused;
+    private int _enterFrame = -10;
+
+    public MenuField? Field { get; set; }
+
+    private void Update()
+    {
+        var field = Field;
+        if (field == null) return;
+
+        var keyboard = Keyboard.current;
+        if (keyboard != null && (keyboard.enterKey.wasPressedThisFrame || keyboard.numpadEnterKey.wasPressedThisFrame)) _enterFrame = Time.frameCount;
+
+        var focused = field.Input.isFocused;
+        if (_wasFocused && !focused && Time.frameCount - _enterFrame <= 1) field.Submitted?.Invoke(field.Value);
+        _wasFocused = focused;
     }
 }

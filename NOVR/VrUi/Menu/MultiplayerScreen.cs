@@ -10,7 +10,6 @@ using NuclearOption.SceneLoading;
 using Steamworks;
 using TMPro;
 using UnityEngine;
-using UnityEngine.InputSystem;
 
 namespace NOVR.VrUi.Menu;
 
@@ -294,13 +293,11 @@ internal sealed class MultiplayerScreen : RailScreen
         if (lobby.Password)
         {
             // Enter joins, as typing the password is the last thing to do.
-            PopupField.Input.onEndEdit.RemoveAllListeners();
-            PopupField.Input.onEndEdit.AddListener(_ =>
+            PopupField.Submitted = _ =>
             {
-                var keyboard = Keyboard.current;
-                if (keyboard != null && (keyboard.enterKey.wasPressedThisFrame || keyboard.numpadEnterKey.wasPressedThisFrame) && Join(lobby)) ClosePopup();
-            });
-            OnPopupClosed(() => PopupField.Input.onEndEdit.RemoveAllListeners());
+                if (Join(lobby)) ClosePopup();
+            };
+            OnPopupClosed(() => PopupField.Submitted = null);
             Focus(PopupField.Button, sound: false);
             PopupField.Begin();
         }

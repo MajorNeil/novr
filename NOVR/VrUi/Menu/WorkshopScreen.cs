@@ -76,7 +76,7 @@ internal sealed class WorkshopScreen : RailScreen
         }, description: "Trending over the last month, the best rated of all time, or the newest.");
         _search = AddField(_section, "SEARCH", "Name or author", "Typing narrows this page; Enter asks Steam for everything that matches.");
         _search.Changed += _ => ApplySearch();
-        _search.Input.onEndEdit.AddListener(SearchSteam);
+        _search.Submitted = SearchSteam;
         _list = AddList(_section, ListRows, FillRow);
         AddSetting(_section, "PAGE", PageLabel, TurnPage, description: "Steam gives fifty a page. Left and Right turn them.");
 
